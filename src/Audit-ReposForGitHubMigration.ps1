@@ -398,7 +398,7 @@ Write-Host ""
 
 if (-not (Test-GitAvailable)) { exit 1 }
 
-$mirrorsDir = Join-Path $OutputDir "mirrors" $ProjectName
+$mirrorsDir = Join-Path (Join-Path $OutputDir "mirrors") $ProjectName
 $reportsDir = Join-Path $OutputDir "reports"
 New-Item -ItemType Directory -Path $mirrorsDir -Force | Out-Null
 New-Item -ItemType Directory -Path $reportsDir -Force | Out-Null
@@ -524,7 +524,8 @@ foreach ($repo in $repos) {
     $largeBlobs = Get-LargeBlobs -RepoPath $mirrorPath -ThresholdBytes $thresholdWarnBytes
     $blobsOver50 = ($largeBlobs | Where-Object { $_.Bytes -ge $thresholdWarnBytes } | Measure-Object).Count
     $blobsOver100 = ($largeBlobs | Where-Object { $_.Bytes -ge $thresholdBlockBytes } | Measure-Object).Count
-    $largestBlob = if ($largeBlobs.Count -gt 0) { $largeBlobs[0].SizeMB } else { 0 }
+    $largestBlob = 0
+    if ($largeBlobs.Count -gt 0) { $largestBlob = $largeBlobs[0].SizeMB }
 
     if ($blobsOver100 -gt 0) {
         Write-Status "  BLOCKER: $blobsOver100 archivo(s) >100 MB. GitHub rechazara el push." -Level "ERROR"
@@ -734,10 +735,12 @@ Write-Host "  LOW:                $lowCount" -ForegroundColor Green
 Write-Host "----------------------------------------------------------------" -ForegroundColor Cyan
 Write-Host "  Tamano total:       $totalSizeMB MB" -ForegroundColor White
 
-$nameColor = if ($nameMappings.Count -gt 0) { "Yellow" } else { "White" }
+$nameColor = "White"
+if ($nameMappings.Count -gt 0) { $nameColor = "Yellow" }
 Write-Host "  Nombres a cambiar:  $($nameMappings.Count)" -ForegroundColor $nameColor
 
-$secretsColor = if ($secretsRepoCount -gt 0) { "Red" } else { "White" }
+$secretsColor = "White"
+if ($secretsRepoCount -gt 0) { $secretsColor = "Red" }
 Write-Host "  Repos con secrets:  $secretsRepoCount" -ForegroundColor $secretsColor
 Write-Host "================================================================" -ForegroundColor Cyan
 
