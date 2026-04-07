@@ -197,7 +197,7 @@ function Get-LargeBlobs {
         $tempFile = [System.IO.Path]::GetTempFileName()
         $objects | Out-File -FilePath $tempFile -Encoding ascii
 
-        $blobInfo = & git cat-file --batch-check='%(objecttype) %(objectsize) %(rest)' < $tempFile 2>&1
+        $blobInfo = & cmd /c "git cat-file --batch-check=""%(objecttype) %(objectsize) %(rest)"" < ""$tempFile"" 2>&1"
         Remove-Item $tempFile -ErrorAction SilentlyContinue
 
         foreach ($line in $blobInfo) {
