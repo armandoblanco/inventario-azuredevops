@@ -527,9 +527,9 @@ foreach ($repo in $repos) {
 
     # 1. Blobs grandes
     Write-Status "  Escaneando blobs grandes..."
-    $largeBlobs = Get-LargeBlobs -RepoPath $mirrorPath -ThresholdBytes $thresholdWarnBytes
-    $blobsOver50 = ($largeBlobs | Where-Object { $_.Bytes -ge $thresholdWarnBytes } | Measure-Object).Count
-    $blobsOver100 = ($largeBlobs | Where-Object { $_.Bytes -ge $thresholdBlockBytes } | Measure-Object).Count
+    $largeBlobs = @(Get-LargeBlobs -RepoPath $mirrorPath -ThresholdBytes $thresholdWarnBytes)
+    $blobsOver50 = @($largeBlobs | Where-Object { $_.Bytes -ge $thresholdWarnBytes }).Count
+    $blobsOver100 = @($largeBlobs | Where-Object { $_.Bytes -ge $thresholdBlockBytes }).Count
     $largestBlob = 0
     if ($largeBlobs.Count -gt 0) { $largestBlob = $largeBlobs[0].SizeMB }
 
@@ -551,7 +551,7 @@ foreach ($repo in $repos) {
 
     # 2. Caracteres especiales en archivos
     Write-Status "  Escaneando caracteres especiales en archivos..."
-    $specialFiles = Get-SpecialCharFiles -RepoPath $mirrorPath
+    $specialFiles = @(Get-SpecialCharFiles -RepoPath $mirrorPath)
     if ($specialFiles.Count -gt 0) {
         Write-Status "  $($specialFiles.Count) archivo(s) con caracteres especiales." -Level "WARN"
     }
@@ -585,7 +585,7 @@ foreach ($repo in $repos) {
 
     # 6. Secrets
     Write-Status "  Escaneando indicadores de secrets..."
-    $secrets = Get-SecretsIndicators -RepoPath $mirrorPath
+    $secrets = @(Get-SecretsIndicators -RepoPath $mirrorPath)
     if ($secrets.Count -gt 0) {
         Write-Status "  $($secrets.Count) indicador(es) de secrets detectados." -Level "WARN"
     }
