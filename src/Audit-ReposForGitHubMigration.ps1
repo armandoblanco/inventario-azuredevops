@@ -81,7 +81,7 @@ param(
 )
 
 Set-StrictMode -Version Latest
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 
 # ----------------------------------------------------------------
 # Funciones auxiliares
@@ -477,7 +477,10 @@ foreach ($repo in $repos) {
         if (Test-Path $mirrorPath) {
             Write-Status "  Mirror existe, actualizando..."
             Push-Location $mirrorPath
+            $prevEAP = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
             & git remote update origin --prune 2>&1 | Out-Null
+            $ErrorActionPreference = $prevEAP
             Pop-Location
         }
         else {
@@ -486,7 +489,10 @@ foreach ($repo in $repos) {
             if ($PatToken) {
                 $cloneUrl = $repoUrl -replace '(https?://)', "`$1user:$PatToken@"
             }
+            $prevEAP = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
             & git clone --mirror $cloneUrl $mirrorPath 2>&1 | Out-Null
+            $ErrorActionPreference = $prevEAP
             if ($LASTEXITCODE -ne 0) {
                 Write-Status "  Error en clone. Saltando." -Level "ERROR"
                 $auditResults += [PSCustomObject]@{
