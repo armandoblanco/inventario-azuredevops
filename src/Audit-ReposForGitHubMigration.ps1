@@ -1,15 +1,15 @@
 <#
 .SYNOPSIS
     Audit-ReposForGitHubMigration.ps1
-    Auditoría pre-migración de repos Git en Azure DevOps Server OnPrem hacia GitHub.
+    Auditoria pre-migracion de repos Git en Azure DevOps Server OnPrem hacia GitHub.
 
 .DESCRIPTION
     Clona repos en modo mirror desde ADO Server y ejecuta:
-      1. Detección de blobs grandes (>50 MB y >100 MB)
+      1. Deteccion de blobs grandes (>50 MB y >100 MB)
       2. Caracteres especiales en nombres de archivos y repos
-      3. Fecha de último commit (clasificación activo/archive)
+      3. Fecha de ultimo commit (clasificacion activo/archive)
       4. Integridad del repo (git fsck)
-      5. Indicadores básicos de secrets en archivos tracked
+      5. Indicadores basicos de secrets en archivos tracked
       6. Resumen consolidado en CSV y JSON
 
 .PARAMETER AdoBaseUrl
@@ -47,7 +47,6 @@
         -PatToken $env:ADO_PAT
 
 .EXAMPLE
-    # Solo auditar repos que contengan "worker" en el nombre
     .\Audit-ReposForGitHubMigration.ps1 `
         -AdoBaseUrl "https://bcrtfs/tfs/BCRCollection" `
         -ProjectName "TPSistar" `
@@ -56,8 +55,6 @@
 .NOTES
     Requiere: git.exe en PATH (2.25+)
     Plataforma: Windows PowerShell 5.1+ o PowerShell 7+
-    Autor: Arquitectura Cloud
-    Fecha: Abril 2026
 #>
 
 [CmdletBinding()]
@@ -86,9 +83,9 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-# ────────────────────────────────────────────────────────────────
+# ----------------------------------------------------------------
 # Funciones auxiliares
-# ────────────────────────────────────────────────────────────────
+# ----------------------------------------------------------------
 
 function Write-Status {
     param([string]$Message, [string]$Level = "INFO")
@@ -106,12 +103,12 @@ function Write-Status {
 function Test-GitAvailable {
     try {
         $version = & git --version 2>&1
-        if ($LASTEXITCODE -ne 0) { throw "git no encontrado" }
+        if ($LASTEXITCODE -ne 0) { throw "git not found" }
         Write-Status "Git detectado: $version"
         return $true
     }
     catch {
-        Write-Status "git.exe no encontrado en PATH. Instalá Git for Windows." -Level "ERROR"
+        Write-Status "git.exe no encontrado en PATH. Instalar Git for Windows." -Level "ERROR"
         return $false
     }
 }
@@ -134,7 +131,6 @@ function Get-RepoListFromApi {
             Method  = "Get"
             Headers = $headers
         }
-        # Si no hay PAT, usar credenciales default (NTLM/Kerberos)
         if (-not $Pat) {
             $params["UseDefaultCredentials"] = $true
         }
@@ -143,7 +139,7 @@ function Get-RepoListFromApi {
     }
     catch {
         Write-Status "Error al consultar API: $_" -Level "ERROR"
-        Write-Status "Verificá conectividad, credenciales y versión de ADO Server." -Level "ERROR"
+        Write-Status "Verificar conectividad, credenciales y version de ADO Server." -Level "ERROR"
         throw
     }
 }
@@ -151,23 +147,33 @@ function Get-RepoListFromApi {
 function Sanitize-RepoName {
     param([string]$Name)
     $sanitized = $Name
-    # Reemplazar tildes y ñ
-    $replacements = @{
-        '[áàäâ]' = 'a'; '[éèëê]' = 'e'; '[íìïî]' = 'i'
-        '[óòöô]' = 'o'; '[úùüû]' = 'u'; '[ñ]' = 'n'
-        '[ÁÀÄÂ]' = 'A'; '[ÉÈËÊ]' = 'E'; '[ÍÌÏÎ]' = 'I'
-        '[ÓÒÖÔ]' = 'O'; '[ÚÙÜÛ]' = 'U'; '[Ñ]' = 'N'
-    }
-    foreach ($pattern in $replacements.Keys) {
-        $sanitized = $sanitized -replace $pattern, $replacements[$pattern]
-    }
-    # Espacios a guiones
+
+    $sanitized = $sanitized -replace [char]0x00E1, 'a'
+    $sanitized = $sanitized -replace [char]0x00E9, 'e'
+    $sanitized = $sanitized -replace [char]0x00ED, 'i'
+    $sanitized = $sanitized -replace [char]0x00F3, 'o'
+    $sanitized = $sanitized -replace [char]0x00FA, 'u'
+    $sanitized = $sanitized -replace [char]0x00C1, 'A'
+    $sanitized = $sanitized -replace [char]0x00C9, 'E'
+    $sanitized = $sanitized -replace [char]0x00CD, 'I'
+    $sanitized = $sanitized -replace [char]0x00D3, 'O'
+    $sanitized = $sanitized -replace [char]0x00DA, 'U'
+    $sanitized = $sanitized -replace [char]0x00E0, 'a'
+    $sanitized = $sanitized -replace [char]0x00E4, 'a'
+    $sanitized = $sanitized -replace [char]0x00E8, 'e'
+    $sanitized = $sanitized -replace [char]0x00EB, 'e'
+    $sanitized = $sanitized -replace [char]0x00EC, 'i'
+    $sanitized = $sanitized -replace [char]0x00EF, 'i'
+    $sanitized = $sanitized -replace [char]0x00F2, 'o'
+    $sanitized = $sanitized -replace [char]0x00F6, 'o'
+    $sanitized = $sanitized -replace [char]0x00F9, 'u'
+    $sanitized = $sanitized -replace [char]0x00FC, 'u'
+    $sanitized = $sanitized -replace [char]0x00F1, 'n'
+    $sanitized = $sanitized -replace [char]0x00D1, 'N'
+
     $sanitized = $sanitized -replace '\s+', '-'
-    # Eliminar caracteres no válidos para GitHub
     $sanitized = $sanitized -replace '[^a-zA-Z0-9._-]', ''
-    # Colapsar guiones múltiples
     $sanitized = $sanitized -replace '-{2,}', '-'
-    # Eliminar guiones al inicio/final
     $sanitized = $sanitized.Trim('-')
     return $sanitized
 }
@@ -182,15 +188,12 @@ function Get-LargeBlobs {
 
     Push-Location $RepoPath
     try {
-        # git rev-list --objects --all | git cat-file --batch-check
-        # Procesamos en dos pasos para compatibilidad con Windows
         $objects = & git rev-list --objects --all 2>&1
         if ($LASTEXITCODE -ne 0) {
             Write-Status "  Error en rev-list: $objects" -Level "WARN"
             return $results
         }
 
-        # Pipe a cat-file via archivo temporal (evita problemas de pipe en Windows)
         $tempFile = [System.IO.Path]::GetTempFileName()
         $objects | Out-File -FilePath $tempFile -Encoding ascii
 
@@ -200,10 +203,10 @@ function Get-LargeBlobs {
         foreach ($line in $blobInfo) {
             if ($line -match '^blob\s+(\d+)\s+(.*)$') {
                 $size = [long]$Matches[1]
-                $path = $Matches[2].Trim()
-                if ($size -ge $ThresholdBytes -and $path) {
+                $filePath = $Matches[2].Trim()
+                if ($size -ge $ThresholdBytes -and $filePath) {
                     $results += [PSCustomObject]@{
-                        Path   = $path
+                        Path   = $filePath
                         SizeMB = [math]::Round($size / 1MB, 2)
                         Bytes  = $size
                     }
@@ -230,19 +233,15 @@ function Get-SpecialCharFiles {
         foreach ($f in $files) {
             $issues = @()
 
-            # Caracteres no-ASCII
             if ($f -match '[^\x00-\x7F]') {
                 $issues += "NON_ASCII"
             }
-            # Espacios en nombre de archivo
             if ($f -match ' ') {
                 $issues += "SPACES"
             }
-            # Caracteres problemáticos en Windows
             if ($f -match '[<>:"|?*]') {
                 $issues += "WINDOWS_INVALID"
             }
-            # Rutas largas (>260 para Windows legacy)
             if ($f.Length -gt 260) {
                 $issues += "PATH_TOO_LONG"
             }
@@ -266,23 +265,31 @@ function Get-SecretsIndicators {
     param([string]$RepoPath)
 
     $results = @()
-    $patterns = @(
-        @{ Name = "CONNECTION_STRING";  Regex = '(?i)(connection\s*string|Data Source=|Server=.*Database=)' }
-        @{ Name = "PASSWORD_LITERAL";   Regex = '(?i)(password|passwd|pwd)\s*[=:]\s*[''"][^''"]{4,}' }
-        @{ Name = "PRIVATE_KEY";        Regex = '-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----' }
-        @{ Name = "API_KEY_PATTERN";    Regex = '(?i)(api[_-]?key|apikey|api[_-]?secret)\s*[=:]\s*[''"][^''"]{8,}' }
-        @{ Name = "AWS_KEY";            Regex = '(?i)(AKIA[0-9A-Z]{16})' }
-        @{ Name = "BEARER_TOKEN";       Regex = '(?i)bearer\s+[a-zA-Z0-9\-._~+/]{20,}' }
-        @{ Name = "PFX_OR_CERT";        Regex = '(?i)\.(pfx|p12|keystore|jks)\b' }
+
+    $patternNames = @(
+        "CONNECTION_STRING",
+        "PASSWORD_LITERAL",
+        "PRIVATE_KEY",
+        "API_KEY_PATTERN",
+        "AWS_KEY",
+        "BEARER_TOKEN",
+        "PFX_OR_CERT"
+    )
+    $patternRegexes = @(
+        '(?i)(connection\s*string|Data Source=|Server=.*Database=)',
+        '(?i)(password|passwd|pwd)\s*[=:]\s*[''"][^''"]{4,}',
+        '-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----',
+        '(?i)(api[_\-]?key|apikey|api[_\-]?secret)\s*[=:]\s*[''"][^''"]{8,}',
+        '(?i)(AKIA[0-9A-Z]{16})',
+        '(?i)bearer\s+[a-zA-Z0-9\-._~+/]{20,}',
+        '(?i)\.(pfx|p12|keystore|jks)\b'
     )
 
     Push-Location $RepoPath
     try {
-        # Solo buscar en archivos tracked del HEAD (no en historial completo)
         $files = & git ls-tree -r --name-only HEAD 2>&1
         if ($LASTEXITCODE -ne 0) { return $results }
 
-        # Filtrar archivos que probablemente no son texto
         $textExtensions = @('.cs', '.java', '.xml', '.json', '.yml', '.yaml', '.config',
                            '.properties', '.env', '.sh', '.ps1', '.bat', '.cmd', '.tf',
                            '.cfg', '.ini', '.conf', '.toml', '.py', '.js', '.ts',
@@ -291,20 +298,19 @@ function Get-SecretsIndicators {
 
         foreach ($file in $files) {
             $ext = [System.IO.Path]::GetExtension($file).ToLower()
-            if ($ext -notin $textExtensions -and $file -notmatch '(?i)(dockerfile|docker-compose|\.env|appsettings|web\.config|app\.config)') {
-                continue
-            }
+            $isRelevant = ($ext -in $textExtensions) -or ($file -match '(?i)(dockerfile|docker-compose|\.env|appsettings|web\.config|app\.config)')
+            if (-not $isRelevant) { continue }
 
             try {
                 $content = & git show "HEAD:$file" 2>&1
                 if ($LASTEXITCODE -ne 0) { continue }
 
                 $contentStr = $content -join "`n"
-                foreach ($p in $patterns) {
-                    if ($contentStr -match $p.Regex) {
+                for ($i = 0; $i -lt $patternNames.Count; $i++) {
+                    if ($contentStr -match $patternRegexes[$i]) {
                         $results += [PSCustomObject]@{
                             File    = $file
-                            Finding = $p.Name
+                            Finding = $patternNames[$i]
                         }
                     }
                 }
@@ -379,27 +385,24 @@ function Get-RepoBranchAndTagCount {
     }
 }
 
-# ────────────────────────────────────────────────────────────────
+# ----------------------------------------------------------------
 # Main
-# ────────────────────────────────────────────────────────────────
+# ----------------------------------------------------------------
 
 Write-Host ""
-Write-Host "╔══════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║    Auditoría Pre-Migración ADO Server → GitHub              ║" -ForegroundColor Cyan
-Write-Host "║    Proyecto: $($ProjectName.PadRight(45))║" -ForegroundColor Cyan
-Write-Host "╚══════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+Write-Host "================================================================" -ForegroundColor Cyan
+Write-Host "  Auditoria Pre-Migracion ADO Server -> GitHub" -ForegroundColor Cyan
+Write-Host "  Proyecto: $ProjectName" -ForegroundColor Cyan
+Write-Host "================================================================" -ForegroundColor Cyan
 Write-Host ""
 
-# Validar prerequisitos
 if (-not (Test-GitAvailable)) { exit 1 }
 
-# Crear directorios
 $mirrorsDir = Join-Path $OutputDir "mirrors" $ProjectName
 $reportsDir = Join-Path $OutputDir "reports"
 New-Item -ItemType Directory -Path $mirrorsDir -Force | Out-Null
 New-Item -ItemType Directory -Path $reportsDir -Force | Out-Null
 
-# Obtener lista de repos
 Write-Status "Obteniendo lista de repos para $ProjectName..."
 $repos = Get-RepoListFromApi -BaseUrl $AdoBaseUrl -Project $ProjectName -Pat $PatToken
 
@@ -411,11 +414,10 @@ $totalRepos = ($repos | Measure-Object).Count
 Write-Status "Repos encontrados: $totalRepos (filtro: $RepoFilter)"
 
 if ($totalRepos -eq 0) {
-    Write-Status "No se encontraron repos. Verificá el proyecto y filtro." -Level "WARN"
+    Write-Status "No se encontraron repos. Verificar el proyecto y filtro." -Level "WARN"
     exit 0
 }
 
-# Resultados
 $auditResults = @()
 $nameMappings = @()
 $allLargeBlobs = @()
@@ -434,36 +436,34 @@ foreach ($repo in $repos) {
     Write-Host ""
     Write-Status "[$repoIndex/$totalRepos] $repoName" -Level "INFO"
 
-    # Verificar si el repo está vacío (sin default branch)
     if (-not $repo.defaultBranch) {
-        Write-Status "  Repo vacío (sin default branch). Saltando." -Level "WARN"
+        Write-Status "  Repo vacio (sin default branch). Saltando." -Level "WARN"
         $auditResults += [PSCustomObject]@{
-            Repository       = $repoName
-            GitHubName       = Sanitize-RepoName $repoName
-            NameChanged      = ($repoName -ne (Sanitize-RepoName $repoName))
-            Status           = "EMPTY"
-            SizeMB           = 0
-            Commits          = 0
-            Branches         = 0
-            Tags             = 0
-            LastCommit       = $null
-            LastAuthor       = "N/A"
-            IsActive         = $false
-            BlobsOver50MB    = 0
-            BlobsOver100MB   = 0
-            LargestBlobMB    = 0
-            SpecialCharFiles = 0
+            Repository        = $repoName
+            GitHubName        = Sanitize-RepoName $repoName
+            NameChanged       = ($repoName -ne (Sanitize-RepoName $repoName))
+            Status            = "EMPTY"
+            SizeMB            = 0
+            Commits           = 0
+            Branches          = 0
+            Tags              = 0
+            LastCommit        = $null
+            LastAuthor        = "N/A"
+            IsActive          = $false
+            BlobsOver50MB     = 0
+            BlobsOver100MB    = 0
+            LargestBlobMB     = 0
+            SpecialCharFiles  = 0
             SecretsIndicators = 0
-            FsckClean        = $false
-            MigrationRisk    = "SKIP"
+            FsckClean         = $false
+            MigrationRisk     = "SKIP"
         }
         continue
     }
 
-    # Sanitizar nombre
     $sanitizedName = Sanitize-RepoName $repoName
     if ($repoName -ne $sanitizedName) {
-        Write-Status "  Nombre requiere sanitización: $repoName → $sanitizedName" -Level "WARN"
+        Write-Status "  Nombre requiere sanitizacion: $repoName -> $sanitizedName" -Level "WARN"
         $nameMappings += [PSCustomObject]@{
             Original  = $repoName
             Sanitized = $sanitizedName
@@ -471,7 +471,6 @@ foreach ($repo in $repos) {
         }
     }
 
-    # Clone mirror
     $mirrorPath = Join-Path $mirrorsDir "$repoName.git"
 
     if (-not $SkipClone) {
@@ -485,22 +484,30 @@ foreach ($repo in $repos) {
             Write-Status "  Clonando mirror..."
             $cloneUrl = $repoUrl
             if ($PatToken) {
-                # Insertar PAT en URL para autenticación
                 $cloneUrl = $repoUrl -replace '(https?://)', "`$1user:$PatToken@"
             }
             & git clone --mirror $cloneUrl $mirrorPath 2>&1 | Out-Null
             if ($LASTEXITCODE -ne 0) {
                 Write-Status "  Error en clone. Saltando." -Level "ERROR"
                 $auditResults += [PSCustomObject]@{
-                    Repository       = $repoName
-                    GitHubName       = $sanitizedName
-                    NameChanged      = ($repoName -ne $sanitizedName)
-                    Status           = "CLONE_FAILED"
-                    SizeMB           = 0; Commits = 0; Branches = 0; Tags = 0
-                    LastCommit       = $null; LastAuthor = "N/A"; IsActive = $false
-                    BlobsOver50MB    = 0; BlobsOver100MB = 0; LargestBlobMB = 0
-                    SpecialCharFiles = 0; SecretsIndicators = 0
-                    FsckClean        = $false; MigrationRisk = "ERROR"
+                    Repository        = $repoName
+                    GitHubName        = $sanitizedName
+                    NameChanged       = ($repoName -ne $sanitizedName)
+                    Status            = "CLONE_FAILED"
+                    SizeMB            = 0
+                    Commits           = 0
+                    Branches          = 0
+                    Tags              = 0
+                    LastCommit        = $null
+                    LastAuthor        = "N/A"
+                    IsActive          = $false
+                    BlobsOver50MB     = 0
+                    BlobsOver100MB    = 0
+                    LargestBlobMB     = 0
+                    SpecialCharFiles  = 0
+                    SecretsIndicators = 0
+                    FsckClean         = $false
+                    MigrationRisk     = "ERROR"
                 }
                 continue
             }
@@ -508,7 +515,7 @@ foreach ($repo in $repos) {
     }
 
     if (-not (Test-Path $mirrorPath)) {
-        Write-Status "  Mirror no encontrado en $mirrorPath. Usá -SkipClone solo si ya clonaste." -Level "ERROR"
+        Write-Status "  Mirror no encontrado en $mirrorPath. Usar -SkipClone solo si ya se clono." -Level "ERROR"
         continue
     }
 
@@ -520,7 +527,7 @@ foreach ($repo in $repos) {
     $largestBlob = if ($largeBlobs.Count -gt 0) { $largeBlobs[0].SizeMB } else { 0 }
 
     if ($blobsOver100 -gt 0) {
-        Write-Status "  BLOCKER: $blobsOver100 archivo(s) >100 MB. GitHub rechazará el push." -Level "ERROR"
+        Write-Status "  BLOCKER: $blobsOver100 archivo(s) >100 MB. GitHub rechazara el push." -Level "ERROR"
     }
     elseif ($blobsOver50 -gt 0) {
         Write-Status "  WARNING: $blobsOver50 archivo(s) >50 MB." -Level "WARN"
@@ -549,11 +556,11 @@ foreach ($repo in $repos) {
         }
     }
 
-    # 3. Última actividad
-    Write-Status "  Verificando última actividad..."
+    # 3. Ultima actividad
+    Write-Status "  Verificando ultima actividad..."
     $activity = Get-RepoLastActivity -RepoPath $mirrorPath
     if (-not $activity.IsActive) {
-        Write-Status "  Inactivo: último commit $($activity.LastCommitDate)" -Level "WARN"
+        Write-Status "  Inactivo: ultimo commit $($activity.LastCommitDate)" -Level "WARN"
     }
 
     # 4. Stats
@@ -566,7 +573,7 @@ foreach ($repo in $repos) {
     $fsckClean = ($LASTEXITCODE -eq 0)
     Pop-Location
     if (-not $fsckClean) {
-        Write-Status "  fsck reportó problemas." -Level "WARN"
+        Write-Status "  fsck reporto problemas." -Level "WARN"
     }
 
     # 6. Secrets
@@ -583,22 +590,29 @@ foreach ($repo in $repos) {
         }
     }
 
-    # Tamaño del mirror
     $repoSizeMB = [math]::Round((Get-ChildItem $mirrorPath -Recurse -File | Measure-Object -Property Length -Sum).Sum / 1MB, 2)
 
-    # Clasificar riesgo
     $risk = "LOW"
-    if ($blobsOver100 -gt 0) { $risk = "BLOCKED" }
-    elseif ($blobsOver50 -gt 0 -or $secrets.Count -gt 0) { $risk = "HIGH" }
-    elseif ($specialFiles.Count -gt 0 -or -not $activity.IsActive) { $risk = "MEDIUM" }
+    if ($blobsOver100 -gt 0) {
+        $risk = "BLOCKED"
+    }
+    elseif ($blobsOver50 -gt 0 -or $secrets.Count -gt 0) {
+        $risk = "HIGH"
+    }
+    elseif ($specialFiles.Count -gt 0 -or (-not $activity.IsActive)) {
+        $risk = "MEDIUM"
+    }
 
-    $status = if (-not $activity.IsActive) { "INACTIVE" } else { "ACTIVE" }
+    $repoStatus = "ACTIVE"
+    if (-not $activity.IsActive) {
+        $repoStatus = "INACTIVE"
+    }
 
     $auditResults += [PSCustomObject]@{
         Repository        = $repoName
         GitHubName        = $sanitizedName
         NameChanged       = ($repoName -ne $sanitizedName)
-        Status            = $status
+        Status            = $repoStatus
         SizeMB            = $repoSizeMB
         Commits           = $stats.Commits
         Branches          = $stats.Branches
@@ -625,115 +639,111 @@ foreach ($repo in $repos) {
     Write-Host "  Resultado: $risk" -ForegroundColor $riskColor
 }
 
-# ────────────────────────────────────────────────────────────────
+# ----------------------------------------------------------------
 # Generar reportes
-# ────────────────────────────────────────────────────────────────
+# ----------------------------------------------------------------
 
 Write-Host ""
 Write-Status "Generando reportes..."
 
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-$baseFileName = "$ProjectName`_audit_$timestamp"
+$baseFileName = "${ProjectName}_audit_${timestamp}"
 
-# CSV principal
-$csvPath = Join-Path $reportsDir "$baseFileName.csv"
+$csvPath = Join-Path $reportsDir "${baseFileName}.csv"
 $auditResults | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
 Write-Status "Reporte principal: $csvPath"
 
-# CSV de blobs grandes
 if ($allLargeBlobs.Count -gt 0) {
-    $blobsCsv = Join-Path $reportsDir "$baseFileName`_large_blobs.csv"
+    $blobsCsv = Join-Path $reportsDir "${baseFileName}_large_blobs.csv"
     $allLargeBlobs | Export-Csv -Path $blobsCsv -NoTypeInformation -Encoding UTF8
     Write-Status "Blobs grandes: $blobsCsv"
 }
 
-# CSV de caracteres especiales
 if ($allSpecialCharFiles.Count -gt 0) {
-    $charsCsv = Join-Path $reportsDir "$baseFileName`_special_chars.csv"
+    $charsCsv = Join-Path $reportsDir "${baseFileName}_special_chars.csv"
     $allSpecialCharFiles | Export-Csv -Path $charsCsv -NoTypeInformation -Encoding UTF8
     Write-Status "Caracteres especiales: $charsCsv"
 }
 
-# CSV de secrets
 if ($allSecretsFindings.Count -gt 0) {
-    $secretsCsv = Join-Path $reportsDir "$baseFileName`_secrets.csv"
+    $secretsCsv = Join-Path $reportsDir "${baseFileName}_secrets.csv"
     $allSecretsFindings | Export-Csv -Path $secretsCsv -NoTypeInformation -Encoding UTF8
     Write-Status "Indicadores de secrets: $secretsCsv"
 }
 
-# CSV de mapeo de nombres
 if ($nameMappings.Count -gt 0) {
-    $mappingCsv = Join-Path $reportsDir "$baseFileName`_name_mappings.csv"
+    $mappingCsv = Join-Path $reportsDir "${baseFileName}_name_mappings.csv"
     $nameMappings | Export-Csv -Path $mappingCsv -NoTypeInformation -Encoding UTF8
     Write-Status "Mapeo de nombres: $mappingCsv"
 }
 
-# JSON consolidado
-$jsonPath = Join-Path $reportsDir "$baseFileName.json"
+$jsonPath = Join-Path $reportsDir "${baseFileName}.json"
+
+$activeCount = ($auditResults | Where-Object { $_.Status -eq "ACTIVE" } | Measure-Object).Count
+$inactiveCount = ($auditResults | Where-Object { $_.Status -eq "INACTIVE" } | Measure-Object).Count
+$emptyCount = ($auditResults | Where-Object { $_.Status -eq "EMPTY" } | Measure-Object).Count
+$blockedCount = ($auditResults | Where-Object { $_.MigrationRisk -eq "BLOCKED" } | Measure-Object).Count
+$highCount = ($auditResults | Where-Object { $_.MigrationRisk -eq "HIGH" } | Measure-Object).Count
+$mediumCount = ($auditResults | Where-Object { $_.MigrationRisk -eq "MEDIUM" } | Measure-Object).Count
+$lowCount = ($auditResults | Where-Object { $_.MigrationRisk -eq "LOW" } | Measure-Object).Count
+$totalSizeMB = [math]::Round(($auditResults | Measure-Object -Property SizeMB -Sum).Sum, 2)
+$secretsRepoCount = ($auditResults | Where-Object { $_.SecretsIndicators -gt 0 } | Measure-Object).Count
+
 $summary = [PSCustomObject]@{
-    AuditDate        = (Get-Date -Format "o")
-    Project          = $ProjectName
-    AdoBaseUrl       = $AdoBaseUrl
-    TotalRepos       = $totalRepos
-    ActiveRepos      = ($auditResults | Where-Object { $_.Status -eq "ACTIVE" } | Measure-Object).Count
-    InactiveRepos    = ($auditResults | Where-Object { $_.Status -eq "INACTIVE" } | Measure-Object).Count
-    EmptyRepos       = ($auditResults | Where-Object { $_.Status -eq "EMPTY" } | Measure-Object).Count
-    BlockedRepos     = ($auditResults | Where-Object { $_.MigrationRisk -eq "BLOCKED" } | Measure-Object).Count
-    HighRiskRepos    = ($auditResults | Where-Object { $_.MigrationRisk -eq "HIGH" } | Measure-Object).Count
-    MediumRiskRepos  = ($auditResults | Where-Object { $_.MigrationRisk -eq "MEDIUM" } | Measure-Object).Count
-    LowRiskRepos     = ($auditResults | Where-Object { $_.MigrationRisk -eq "LOW" } | Measure-Object).Count
-    TotalSizeMB      = [math]::Round(($auditResults | Measure-Object -Property SizeMB -Sum).Sum, 2)
-    ReposWithSecrets = ($auditResults | Where-Object { $_.SecretsIndicators -gt 0 } | Measure-Object).Count
+    AuditDate            = (Get-Date -Format "o")
+    Project              = $ProjectName
+    AdoBaseUrl           = $AdoBaseUrl
+    TotalRepos           = $totalRepos
+    ActiveRepos          = $activeCount
+    InactiveRepos        = $inactiveCount
+    EmptyRepos           = $emptyCount
+    BlockedRepos         = $blockedCount
+    HighRiskRepos        = $highCount
+    MediumRiskRepos      = $mediumCount
+    LowRiskRepos         = $lowCount
+    TotalSizeMB          = $totalSizeMB
+    ReposWithSecrets     = $secretsRepoCount
     NamesRequiringChange = $nameMappings.Count
-    Repos            = $auditResults
-    LargeBlobs       = $allLargeBlobs
-    SecretsFindings  = $allSecretsFindings
-    NameMappings     = $nameMappings
+    Repos                = $auditResults
+    LargeBlobs           = $allLargeBlobs
+    SecretsFindings      = $allSecretsFindings
+    NameMappings         = $nameMappings
 }
+
 $summary | ConvertTo-Json -Depth 5 | Out-File -FilePath $jsonPath -Encoding UTF8
 Write-Status "JSON consolidado: $jsonPath"
 
-# ────────────────────────────────────────────────────────────────
+# ----------------------------------------------------------------
 # Resumen en consola
-# ────────────────────────────────────────────────────────────────
+# ----------------------------------------------------------------
 
 Write-Host ""
-Write-Host "╔══════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║                    RESUMEN DE AUDITORÍA                     ║" -ForegroundColor Cyan
-Write-Host "╠══════════════════════════════════════════════════════════════╣" -ForegroundColor Cyan
-Write-Host "║  Proyecto:        $($ProjectName.PadRight(40))║" -ForegroundColor White
-Write-Host "║  Total repos:     $($totalRepos.ToString().PadRight(40))║" -ForegroundColor White
+Write-Host "================================================================" -ForegroundColor Cyan
+Write-Host "                  RESUMEN DE AUDITORIA" -ForegroundColor Cyan
+Write-Host "================================================================" -ForegroundColor Cyan
+Write-Host "  Proyecto:           $ProjectName" -ForegroundColor White
+Write-Host "  Total repos:        $totalRepos" -ForegroundColor White
+Write-Host "  Activos:            $activeCount" -ForegroundColor Green
+Write-Host "  Inactivos:          $inactiveCount" -ForegroundColor Yellow
+Write-Host "  Vacios:             $emptyCount" -ForegroundColor DarkGray
+Write-Host "----------------------------------------------------------------" -ForegroundColor Cyan
+Write-Host "  BLOCKED:            $blockedCount" -ForegroundColor Red
+Write-Host "  HIGH:               $highCount" -ForegroundColor Red
+Write-Host "  MEDIUM:             $mediumCount" -ForegroundColor Yellow
+Write-Host "  LOW:                $lowCount" -ForegroundColor Green
+Write-Host "----------------------------------------------------------------" -ForegroundColor Cyan
+Write-Host "  Tamano total:       $totalSizeMB MB" -ForegroundColor White
 
-$active = ($auditResults | Where-Object { $_.Status -eq "ACTIVE" } | Measure-Object).Count
-$inactive = ($auditResults | Where-Object { $_.Status -eq "INACTIVE" } | Measure-Object).Count
-$empty = ($auditResults | Where-Object { $_.Status -eq "EMPTY" } | Measure-Object).Count
-Write-Host "║  Activos:         $($active.ToString().PadRight(40))║" -ForegroundColor Green
-Write-Host "║  Inactivos:       $($inactive.ToString().PadRight(40))║" -ForegroundColor Yellow
-Write-Host "║  Vacíos:          $($empty.ToString().PadRight(40))║" -ForegroundColor DarkGray
+$nameColor = if ($nameMappings.Count -gt 0) { "Yellow" } else { "White" }
+Write-Host "  Nombres a cambiar:  $($nameMappings.Count)" -ForegroundColor $nameColor
 
-Write-Host "╠══════════════════════════════════════════════════════════════╣" -ForegroundColor Cyan
-$blocked = ($auditResults | Where-Object { $_.MigrationRisk -eq "BLOCKED" } | Measure-Object).Count
-$high = ($auditResults | Where-Object { $_.MigrationRisk -eq "HIGH" } | Measure-Object).Count
-$medium = ($auditResults | Where-Object { $_.MigrationRisk -eq "MEDIUM" } | Measure-Object).Count
-$low = ($auditResults | Where-Object { $_.MigrationRisk -eq "LOW" } | Measure-Object).Count
-Write-Host "║  BLOCKED:         $($blocked.ToString().PadRight(40))║" -ForegroundColor Red
-Write-Host "║  HIGH:            $($high.ToString().PadRight(40))║" -ForegroundColor Red
-Write-Host "║  MEDIUM:          $($medium.ToString().PadRight(40))║" -ForegroundColor Yellow
-Write-Host "║  LOW:             $($low.ToString().PadRight(40))║" -ForegroundColor Green
+$secretsColor = if ($secretsRepoCount -gt 0) { "Red" } else { "White" }
+Write-Host "  Repos con secrets:  $secretsRepoCount" -ForegroundColor $secretsColor
+Write-Host "================================================================" -ForegroundColor Cyan
 
-$totalSize = [math]::Round(($auditResults | Measure-Object -Property SizeMB -Sum).Sum, 2)
-Write-Host "╠══════════════════════════════════════════════════════════════╣" -ForegroundColor Cyan
-Write-Host "║  Tamaño total:    $("$totalSize MB".PadRight(40))║" -ForegroundColor White
-Write-Host "║  Nombres a cambiar: $($nameMappings.Count.ToString().PadRight(38))║" -ForegroundColor $(if ($nameMappings.Count -gt 0) { "Yellow" } else { "White" })
-
-$secretsRepos = ($auditResults | Where-Object { $_.SecretsIndicators -gt 0 } | Measure-Object).Count
-Write-Host "║  Repos con secrets: $($secretsRepos.ToString().PadRight(38))║" -ForegroundColor $(if ($secretsRepos -gt 0) { "Red" } else { "White" })
-Write-Host "╚══════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
-
-# Listar repos bloqueados si los hay
-if ($blocked -gt 0) {
+if ($blockedCount -gt 0) {
     Write-Host ""
-    Write-Status "REPOS BLOQUEADOS (archivos >100 MB, GitHub rechazará push):" -Level "ERROR"
+    Write-Status "REPOS BLOQUEADOS (archivos >100 MB, GitHub rechazara push):" -Level "ERROR"
     $auditResults | Where-Object { $_.MigrationRisk -eq "BLOCKED" } | ForEach-Object {
         Write-Host "  - $($_.Repository): mayor blob = $($_.LargestBlobMB) MB" -ForegroundColor Red
     }
@@ -742,4 +752,4 @@ if ($blocked -gt 0) {
 }
 
 Write-Host ""
-Write-Status "Auditoría completada. Reportes en: $reportsDir" -Level "OK"
+Write-Status "Auditoria completada. Reportes en: $reportsDir" -Level "OK"
