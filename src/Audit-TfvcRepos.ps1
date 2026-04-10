@@ -117,6 +117,33 @@ function Invoke-AdoApi {
     }
 }
 
+function Test-IsApiError {
+    param($Response)
+    if ($null -eq $Response) { return $true }
+    if ($Response.PSObject.Properties.Match('_error').Count -gt 0) {
+        return [bool]$Response._error
+    }
+    return $false
+}
+
+function Get-ApiErrorMessage {
+    param($Response)
+    if ($null -eq $Response) { return "Null response" }
+    if ($Response.PSObject.Properties.Match('_message').Count -gt 0) {
+        return $Response._message
+    }
+    return "Unknown error"
+}
+
+function Get-ApiErrorStatusCode {
+    param($Response)
+    if ($null -eq $Response) { return "Unknown" }
+    if ($Response.PSObject.Properties.Match('_statusCode').Count -gt 0) {
+        return $Response._statusCode
+    }
+    return "Unknown"
+}
+
 function Get-AllProjects {
     param([string]$BaseUrl, [string]$Pat, [string]$ApiVer)
 
@@ -128,8 +155,8 @@ function Get-AllProjects {
         $url = "$BaseUrl/_apis/projects?`$top=$top&`$skip=$skip&api-version=$ApiVer"
         $response = Invoke-AdoApi -Url $url -Pat $Pat
 
-        if ($response._error) {
-            Write-Status "Error obteniendo proyectos: $($response._message)" -Level "ERROR"
+        if (Test-IsApiError $response) {
+            Write-Status "Error obteniendo proyectos: $(Get-ApiErrorMessage $response)" -Level "ERROR"
             return $allProjects
         }
 
@@ -195,7 +222,7 @@ foreach ($project in $allProjects) {
     $fileCount = 0
     $folderCount = 0
 
-    if (-not $tfvcItems._error) {
+    if (-not (Test-IsApiError $tfvcItems)) {
         $items = @($tfvcItems.value)
         if ($items.Count -gt 0) {
             $hasTfvc = $true
@@ -211,11 +238,11 @@ foreach ($project in $allProjects) {
     }
     else {
         # 404 = no TFVC, otros codigos = error real
-        if ($tfvcItems._statusCode -eq 404) {
+        if ((Get-ApiErrorStatusCode $tfvcItems) -eq 404) {
             Write-Status "  Sin contenido TFVC (404)." -Level "INFO"
         }
         else {
-            Write-Status "  Error consultando TFVC: $($tfvcItems._statusCode) - $($tfvcItems._message)" -Level "WARN"
+            Write-Status "  Error consultando TFVC: $(Get-ApiErrorStatusCode $tfvcItems) - $(Get-ApiErrorMessage $tfvcItems)" -Level "WARN"
         }
     }
 
@@ -245,7 +272,7 @@ foreach ($project in $allProjects) {
     $branchResponse = Invoke-AdoApi -Url $branchUrl -Pat $PatToken
 
     $branchCount = 0
-    if (-not $branchResponse._error) {
+    if (-not (Test-IsApiError $branchResponse)) {
         $branches = @($branchResponse.value)
         $branchCount = $branches.Count
 
@@ -281,7 +308,7 @@ foreach ($project in $allProjects) {
         }
     }
     else {
-        Write-Status "  Error obteniendo branches: $($branchResponse._message)" -Level "WARN"
+        Write-Status "  Error obteniendo branches: $(Get-ApiErrorMessage $branchResponse)" -Level "WARN"
     }
 
     # ---- 3. Ultimo changeset ----
@@ -294,7 +321,7 @@ foreach ($project in $allProjects) {
     $lastCsAuthor = "N/A"
     $isActive = $false
 
-    if (-not $csResponse._error) {
+    if (-not (Test-IsApiError $csResponse)) {
         $changesets = @($csResponse.value)
         if ($changesets.Count -gt 0) {
             $lastCs = $changesets[0]
@@ -322,7 +349,7 @@ foreach ($project in $allProjects) {
         }
     }
     else {
-        Write-Status "  Error obteniendo changesets: $($csResponse._message)" -Level "WARN"
+        Write-Status "  Error obteniendo changesets: $(Get-ApiErrorMessage $csResponse)" -Level "WARN"
     }
 
     # ---- 4. Pipelines que apuntan a TFVC ----
@@ -331,14 +358,14 @@ foreach ($project in $allProjects) {
     $pipeResponse = Invoke-AdoApi -Url $pipeUrl -Pat $PatToken
 
     $tfvcPipeCount = 0
-    if (-not $pipeResponse._error) {
+    if (-not (Test-IsApiError $pipeResponse)) {
         $pipelines = @($pipeResponse.value)
         foreach ($pipe in $pipelines) {
             # Obtener detalle de cada pipeline para ver repository.type
             $pipeDetailUrl = "$AdoBaseUrl/$projectName/_apis/build/definitions/$($pipe.id)?api-version=$ApiVersion"
             $pipeDetail = Invoke-AdoApi -Url $pipeDetailUrl -Pat $PatToken
 
-            if (-not $pipeDetail._error) {
+            if (-not (Test-IsApiError $pipeDetail)) {
                 $repoType = ""
                 if ($pipeDetail.repository) {
                     $repoType = $pipeDetail.repository.type
@@ -366,7 +393,7 @@ foreach ($project in $allProjects) {
         }
     }
     else {
-        Write-Status "  Error obteniendo pipelines: $($pipeResponse._message)" -Level "WARN"
+        Write-Status "  Error obteniendo pipelines: $(Get-ApiErrorMessage $pipeResponse)" -Level "WARN"
     }
 
     # ---- Clasificar accion de migracion ----
