@@ -97,7 +97,7 @@ function New-GitHubRepo {
         Authorization = "token $Pat"
         Accept        = "application/vnd.github+json"
     }
-    $body = @{ name = $RepoName; private = $true; auto_init = $false } | ConvertTo-Json
+    $body = @{ name = $RepoName; visibility = "internal"; auto_init = $false } | ConvertTo-Json
     try {
         $null = Invoke-RestMethod -Uri "https://api.github.com/orgs/$Org/repos" `
             -Method Post -Headers $headers -Body $body -ContentType "application/json"
