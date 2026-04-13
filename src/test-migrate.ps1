@@ -207,11 +207,22 @@ foreach ($r in $gitRepos) {
 
     $cloneUrl = "$ADO_BASE/$project/_git/$repo"
     if ($ADO_PAT) {
-        $cloneUrl = $cloneUrl -replace 'https://', "https://user:$ADO_PAT@"
+        # URL-encodear el PAT: caracteres como +, /, = rompen la URL embebida en git
+        $encodedPat = [System.Uri]::EscapeDataString($ADO_PAT)
+        $cloneUrl = $cloneUrl -replace 'https://', "https://user:$encodedPat@"
     }
 
     $gitOutput = & git clone --mirror $cloneUrl $mirrorPath 2>&1
     $gitOutput | ForEach-Object { Write-Host "    $_" -ForegroundColor Gray }
+
+    # Si falla con URL embebida, reintentar con http.extraheader (mas robusto en ADO Server)
+    if (-not (Test-Path (Join-Path $mirrorPath "HEAD")) -and $ADO_PAT) {
+        Write-Host "    Reintentando con http.extraheader..." -ForegroundColor Yellow
+        $base64Ado = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$ADO_PAT"))
+        $plainUrl  = "$ADO_BASE/$project/_git/$repo"
+        $gitOutput = & git -c "http.extraheader=Authorization: Basic $base64Ado" clone --mirror $plainUrl $mirrorPath 2>&1
+        $gitOutput | ForEach-Object { Write-Host "    $_" -ForegroundColor Gray }
+    }
 
     if (-not (Test-Path (Join-Path $mirrorPath "HEAD"))) {
         Write-Host "  FALLO: clone mirror no completado para '$repo'" -ForegroundColor Red
