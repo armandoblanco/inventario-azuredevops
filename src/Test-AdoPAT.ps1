@@ -182,7 +182,8 @@ Write-Host ""
 
 Write-Host "---- TEST 4: HTTP GET al endpoint de la collection ----" -ForegroundColor White
 
-$collectionUrl = "$AdoBaseUrl/_apis?api-version=5.0"
+# Nota: /_apis no existe en ADO Server 2019+. Se usa /_apis/projects como proxy de acceso.
+$collectionUrl = "$AdoBaseUrl/_apis/projects?`$top=1&api-version=5.0"
 Write-Info "URL: $collectionUrl"
 
 try {
@@ -207,8 +208,8 @@ try {
             Write-Diag "Verifica que el PAT fue creado para la organization/collection correcta."
         }
         404 {
-            Write-Diag "La URL de la collection no existe: $AdoBaseUrl"
-            Write-Diag "Verifica la URL. Formato esperado: https://<servidor>/tfs/<NombreCollection>"
+            Write-Diag "Endpoint no encontrado. En ADO Server 2019+ el endpoint /_apis raiz no existe."
+            Write-Diag "Esto es un falso negativo: si TEST 5 pasa, la collection es accesible."
         }
         default {
             Write-Diag "Mensaje: $($_.Exception.Message)"
@@ -367,15 +368,40 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     Write-Info "Git version: $gitVersion"
 
     $cloneUrl = "$AdoBaseUrl/$Project/_git/$GitRepo"
+
+    # URL-encodear el PAT: caracteres como +, /, = en tokens base64 rompen la URL git
+    $encodedPat = ""
     if ($PatToken) {
-        $authUrl = $cloneUrl -replace 'https://', "https://user:$PatToken@"
+        $encodedPat = [System.Uri]::EscapeDataString($PatToken)
+    }
+
+    if ($PatToken) {
+        $authUrl = $cloneUrl -replace 'https://', "https://user:$encodedPat@"
     } else {
         $authUrl = $cloneUrl
     }
 
-    Write-Info "Ejecutando: git ls-remote $cloneUrl"
+    Write-Info "Ejecutando: git ls-remote $cloneUrl  (PAT URL-encoded en la URL real)"
     $lsOutput = & git ls-remote $authUrl 2>&1
     $lsExit = $LASTEXITCODE
+
+    # Si falla con URL embebida, intentar con http.extraheader (mas robusto en ADO Server)
+    if ($lsExit -ne 0 -and $PatToken) {
+        Write-Info "Reintentando con http.extraheader (metodo alternativo para ADO Server)..."
+        $base64Pat = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$PatToken"))
+        $lsOutput2 = & git -c "http.extraheader=Authorization: Basic $base64Pat" ls-remote $cloneUrl 2>&1
+        $lsExit2 = $LASTEXITCODE
+        if ($lsExit2 -eq 0) {
+            Write-Pass "git ls-remote exitoso usando http.extraheader."
+            Write-Info "IMPORTANTE: El PAT tiene caracteres especiales que rompen la URL embebida."
+            Write-Info "En test-migrate.ps1, el clone usara este metodo automaticamente si falla el primero."
+            $lsOutput2 | Select-Object -First 5 | ForEach-Object { Write-Info "  $_" }
+            $lsExit = 0  # marcar como exitoso
+            $lsOutput = $lsOutput2
+        } else {
+            Write-Diag "Tambien fallo con http.extraheader: $($lsOutput2 -join ' | ')"
+        }
+    }
 
     if ($lsExit -eq 0) {
         $refCount = @($lsOutput | Where-Object { $_ -match "refs/" }).Count
