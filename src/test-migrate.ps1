@@ -7,28 +7,68 @@
     Requiere: git instalado, conectividad a bcrtfs y github.com
 .PARAMETER MigrationType
     Tipo de migracion a ejecutar. Valores: Git | TFVC | Both. Default: Both
+.PARAMETER EnvFile
+    Ruta al archivo .env con la configuracion. Default: ./.env (junto al script)
 .EXAMPLE
-    $env:GH_PAT = "ghp_tu_token_github"
-    $env:ADO_PAT = "tu_pat_ado"
+    # 1) Copiar .env.example a .env y completar GH_PAT, ADO_PAT, ADO_BASE, GH_ORG, WORKDIR
+    # 2) Ejecutar:
     .\test-migrate.ps1 -MigrationType Both
     .\test-migrate.ps1 -MigrationType Git
     .\test-migrate.ps1 -MigrationType TFVC
+    .\test-migrate.ps1 -EnvFile "C:\ruta\a\mi.env"
+.EXAMPLE
+    # Alternativa sin .env (usar variables de entorno del shell):
+    $env:GH_PAT = "ghp_tu_token_github"
+    $env:ADO_PAT = "tu_pat_ado"
+    .\test-migrate.ps1 -MigrationType Both
 #>
 
 [CmdletBinding()]
 param(
     [ValidateSet("Git", "TFVC", "Both")]
-    [string]$MigrationType = "Both"
+    [string]$MigrationType = "Both",
+
+    [string]$EnvFile = (Join-Path $PSScriptRoot ".env")
 )
 
 # ============================================================
-# CONFIGURACION
+# CARGA DE .env
 # ============================================================
-$ADO_BASE    = "https://bcrtfs/tfs/BCRCollection"
-$GH_ORG      = "BCR-Devops"
-$GH_PAT      = $env:GH_PAT
-$ADO_PAT     = $env:ADO_PAT
-$WORKDIR     = "C:\mp"   # ruta corta para evitar MAX_PATH (260 chars) en Windows
+function Import-DotEnv {
+    param([string]$Path)
+    if (-not (Test-Path $Path)) {
+        Write-Host "INFO: No se encontro archivo .env en '$Path'. Se usaran variables de entorno actuales." -ForegroundColor DarkYellow
+        return
+    }
+    Write-Host "INFO: Cargando configuracion desde $Path" -ForegroundColor DarkCyan
+    Get-Content -Path $Path | ForEach-Object {
+        $line = $_.Trim()
+        if ([string]::IsNullOrWhiteSpace($line)) { return }
+        if ($line.StartsWith("#")) { return }
+        $idx = $line.IndexOf("=")
+        if ($idx -lt 1) { return }
+        $key = $line.Substring(0, $idx).Trim()
+        $val = $line.Substring($idx + 1).Trim()
+        # Quitar comillas envolventes si las hay
+        if (($val.StartsWith('"') -and $val.EndsWith('"')) -or
+            ($val.StartsWith("'") -and $val.EndsWith("'"))) {
+            $val = $val.Substring(1, $val.Length - 2)
+        }
+        # Set en el scope del proceso para que $env:KEY funcione
+        [Environment]::SetEnvironmentVariable($key, $val, "Process")
+    }
+}
+
+Import-DotEnv -Path $EnvFile
+
+# ============================================================
+# CONFIGURACION (desde .env o variables de entorno)
+# ============================================================
+$ADO_BASE = if ($env:ADO_BASE) { $env:ADO_BASE } else { "https://bcrtfs/tfs/BCRCollection" }
+$GH_ORG   = if ($env:GH_ORG)   { $env:GH_ORG }   else { "BCR-Devops" }
+$WORKDIR  = if ($env:WORKDIR)  { $env:WORKDIR }  else { "C:\mp" }   # ruta corta para evitar MAX_PATH
+$GH_PAT   = $env:GH_PAT
+$ADO_PAT  = $env:ADO_PAT
 
 # Cargar ensamblado ZIP (.NET) para extraccion robusta con PS 5.1
 Add-Type -AssemblyName System.IO.Compression.FileSystem
