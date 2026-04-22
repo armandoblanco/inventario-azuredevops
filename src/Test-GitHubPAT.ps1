@@ -119,6 +119,51 @@ function Invoke-GitHubApi {
     return Invoke-WebRequest @params
 }
 
+# Extrae status code y cuerpo de un ErrorRecord funcionando en PS 5.1 (WebException) y PS 7+ (HttpResponseException)
+function Get-HttpStatusCode {
+    param([System.Management.Automation.ErrorRecord]$ErrorRecord)
+    try {
+        $ex = $ErrorRecord.Exception
+        if ($ex.Response) {
+            return [int]$ex.Response.StatusCode
+        }
+    } catch {}
+    # PS 7: HttpResponseException.StatusCode
+    if ($ErrorRecord.Exception.PSObject.Properties.Name -contains 'StatusCode') {
+        return [int]$ErrorRecord.Exception.StatusCode
+    }
+    return 0
+}
+
+function Get-HttpResponseBody {
+    param([System.Management.Automation.ErrorRecord]$ErrorRecord)
+    # PS 7 expone el body en ErrorDetails.Message
+    if ($ErrorRecord.ErrorDetails -and $ErrorRecord.ErrorDetails.Message) {
+        return $ErrorRecord.ErrorDetails.Message
+    }
+    # PS 5.1: leer stream de la respuesta
+    try {
+        $resp = $ErrorRecord.Exception.Response
+        if ($resp) {
+            $stream = $resp.GetResponseStream()
+            $stream.Position = 0
+            $reader = New-Object System.IO.StreamReader($stream)
+            return $reader.ReadToEnd()
+        }
+    } catch {}
+    return ""
+}
+
+function Show-SamlSsoHint {
+    param([string]$Body, [string]$OrgName)
+    if ($Body -and $Body -match 'SAML enforcement|saml-sso|single sign') {
+        Write-Diag "SAML SSO: la org '$OrgName' exige autorizar el PAT."
+        Write-Diag "Accion: https://github.com/settings/tokens -> localiza tu PAT -> 'Configure SSO' -> Authorize para '$OrgName'."
+        return $true
+    }
+    return $false
+}
+
 # ----------------------------------------------------------------
 # Banner
 # ----------------------------------------------------------------
@@ -225,21 +270,24 @@ try {
     } else {
         Write-Warn "El token no tiene fecha de expiracion declarada (o es non-expiring)."
     }
-} catch [System.Net.WebException] {
-    $code = "desconocido"
-    if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode }
+} catch {
+    $code = Get-HttpStatusCode $_
+    $body = Get-HttpResponseBody $_
     Write-Fail "HTTP $code autenticando con el PAT."
     switch ($code) {
         401 {
             Write-Diag "PAT invalido, revocado o vencido. Genera uno nuevo en: https://github.com/settings/tokens"
         }
         403 {
-            Write-Diag "PAT bloqueado por rate-limit, IP allowlist o SSO no autorizado."
+            if (-not (Show-SamlSsoHint $body $Org)) {
+                Write-Diag "PAT bloqueado por rate-limit, IP allowlist o SSO no autorizado."
+            }
         }
         default {
             Write-Diag "Mensaje: $($_.Exception.Message)"
         }
     }
+    if ($body) { Write-Diag "Respuesta GitHub: $body" }
     Write-Host ""
     Write-Host "================================================================" -ForegroundColor Cyan
     Write-Host "  Auth fallo. Resto de tests omitidos." -ForegroundColor Red
@@ -331,40 +379,46 @@ if (-not $Org) {
                 Write-Diag "  - Rol 'admin' en la org, O"
                 Write-Diag "  - Permiso 'Repository creation' habilitado en Settings -> Member privileges."
             }
-        } catch [System.Net.WebException] {
-            $code = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
+        } catch {
+            $code = Get-HttpStatusCode $_
+            $body = Get-HttpResponseBody $_
             Write-Fail "HTTP $code consultando membresia."
-            Write-Diag "No eres miembro de '$Org' o el PAT no esta autorizado para verlo."
+            if (-not (Show-SamlSsoHint $body $Org)) {
+                Write-Diag "No eres miembro de '$Org' o el PAT no esta autorizado para verlo."
+            }
         }
 
         # ----------------------------------------------------------------
-        # TEST 7: Permiso real para crear repos (dry-run via /orgs/{org}/repos POST con validacion)
-        # Ejecutamos un GET a /orgs/{org}/repos que requiere que veas la org, y
-        # verificamos el header x-ratelimit-remaining / x-accepted-oauth-scopes.
+        # TEST 7: Listado de repos de la org (proxy para permisos)
         # ----------------------------------------------------------------
         Write-Host ""
         Write-Host "---- TEST 7: Listado de repos de la org (proxy para permisos) ----" -ForegroundColor White
         try {
             $listResp = Invoke-GitHubApi -Url "https://api.github.com/orgs/$Org/repos?per_page=1" -Pat $PatToken
             Write-Pass "HTTP $($listResp.StatusCode) - PAT puede listar repos de '$Org'."
-        } catch [System.Net.WebException] {
-            $code = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
+        } catch {
+            $code = Get-HttpStatusCode $_
+            $body = Get-HttpResponseBody $_
             Write-Fail "HTTP $code listando repos de '$Org'."
-            if ($code -eq 403) {
-                Write-Diag "Posible SSO/SAML no autorizado. Visita https://github.com/settings/tokens y presiona 'Authorize' para la org."
+            if (-not (Show-SamlSsoHint $body $Org) -and $code -eq 403) {
+                Write-Diag "Posible SSO/SAML no autorizado. Visita https://github.com/settings/tokens y autoriza el PAT para la org."
             }
         }
-    } catch [System.Net.WebException] {
-        $code = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
+    } catch {
+        $code = Get-HttpStatusCode $_
+        $body = Get-HttpResponseBody $_
         Write-Fail "HTTP $code accediendo a la org '$Org'."
-        switch ($code) {
-            404 { Write-Diag "La org '$Org' no existe o tu PAT no tiene visibilidad sobre ella (SSO?)." }
-            403 {
-                Write-Diag "Posible SSO/SAML sin autorizar para este PAT."
-                Write-Diag "Abre https://github.com/settings/tokens, localiza el PAT y presiona 'Configure SSO' -> Authorize para '$Org'."
+        if (-not (Show-SamlSsoHint $body $Org)) {
+            switch ($code) {
+                404 { Write-Diag "La org '$Org' no existe o tu PAT no tiene visibilidad sobre ella (SSO?)." }
+                403 {
+                    Write-Diag "Posible SSO/SAML sin autorizar para este PAT."
+                    Write-Diag "Abre https://github.com/settings/tokens, localiza el PAT y presiona 'Configure SSO' -> Authorize para '$Org'."
+                }
+                default { Write-Diag "Mensaje: $($_.Exception.Message)" }
             }
-            default { Write-Diag "Mensaje: $($_.Exception.Message)" }
         }
+        if ($body) { Write-Diag "Respuesta GitHub: $body" }
     }
 }
 
@@ -383,6 +437,16 @@ try {
         Write-Diag "1. No eres miembro (agrega tu cuenta a la org)."
         Write-Diag "2. SSO no autorizado: https://github.com/settings/tokens -> PAT -> 'Configure SSO' -> Authorize '$Org'."
     }
+} catch {
+    $code = Get-HttpStatusCode $_
+    $body = Get-HttpResponseBody $_
+    Write-Warn "HTTP $code listando /user/orgs."
+    if (-not (Show-SamlSsoHint $body $Org)) {
+        Write-Diag "Mensaje: $($_.Exception.Message)"
+    }
+}
+
+Write-Host ""
 
 # ----------------------------------------------------------------
 # TEST 9: Crear y borrar un repo de prueba en la org (end-to-end)
@@ -412,25 +476,22 @@ if ($SkipCreateTest) {
                                  -Method Post -Body $createBody
         Write-Pass "Repo creado (HTTP $($resp.StatusCode)). Scope 'repo' + 'write:org' funcionan."
         $createdOk = $true
-    } catch [System.Net.WebException] {
-        $code = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
-        $body = ""
-        try {
-            $stream = $_.Exception.Response.GetResponseStream()
-            $reader = New-Object System.IO.StreamReader($stream)
-            $body = $reader.ReadToEnd()
-        } catch {}
+    } catch {
+        $code = Get-HttpStatusCode $_
+        $body = Get-HttpResponseBody $_
         Write-Fail "HTTP $code al crear repo de prueba."
-        switch ($code) {
-            401 { Write-Diag "PAT invalido/vencido." }
-            403 {
-                Write-Diag "El PAT no tiene permiso para crear repos en '$Org'."
-                Write-Diag "Falta scope 'write:org' o 'Repository creation' deshabilitado en la org."
-                Write-Diag "Si la org usa SSO: autoriza el PAT en https://github.com/settings/tokens."
+        if (-not (Show-SamlSsoHint $body $Org)) {
+            switch ($code) {
+                401 { Write-Diag "PAT invalido/vencido." }
+                403 {
+                    Write-Diag "El PAT no tiene permiso para crear repos en '$Org'."
+                    Write-Diag "Falta scope 'write:org' o 'Repository creation' deshabilitado en la org."
+                    Write-Diag "Si la org usa SSO: autoriza el PAT en https://github.com/settings/tokens."
+                }
+                404 { Write-Diag "La org '$Org' no existe o no eres miembro." }
+                422 { Write-Diag "Nombre de repo invalido o ya existe. Intenta con otro -TestRepoName." }
+                default { Write-Diag "Mensaje: $($_.Exception.Message)" }
             }
-            404 { Write-Diag "La org '$Org' no existe o no eres miembro." }
-            422 { Write-Diag "Nombre de repo invalido o ya existe. Intenta con otro -TestRepoName." }
-            default { Write-Diag "Mensaje: $($_.Exception.Message)" }
         }
         if ($body) { Write-Diag "Respuesta GitHub: $body" }
     }
@@ -442,8 +503,8 @@ if ($SkipCreateTest) {
             $null = Invoke-GitHubApi -Url "https://api.github.com/repos/$Org/$TestRepoName" `
                                      -Pat $PatToken -Method Delete
             Write-Pass "Repo '$Org/$TestRepoName' eliminado. Scope 'delete_repo' funciona."
-        } catch [System.Net.WebException] {
-            $code = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
+        } catch {
+            $code = Get-HttpStatusCode $_
             Write-Warn "HTTP $code al borrar '$Org/$TestRepoName'."
             switch ($code) {
                 403 {
@@ -458,11 +519,6 @@ if ($SkipCreateTest) {
             }
         }
     }
-}
-
-Write-Host ""
-} catch {
-    Write-Warn "No se pudo listar /user/orgs: $($_.Exception.Message)"
 }
 
 Write-Host ""
