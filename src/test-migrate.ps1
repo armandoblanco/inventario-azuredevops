@@ -296,6 +296,19 @@ foreach ($r in $gitRepos) {
     Write-Host "  [3/4] Push mirror a GitHub..." -ForegroundColor Yellow
     Push-Location $mirrorPath
 
+    # Limpiar refs que GitHub rechaza ANTES del push:
+    #   refs/pull/*       -> ADO expone PRs aqui; GitHub los considera "hidden refs" y rechaza el push
+    #   refs/remotes/*    -> refs de otros remotes que no deben replicarse
+    #   refs/keep-around  -> refs internos de algunos servidores
+    Write-Host "    Limpiando refs no portables (pull/*, remotes/*)..." -ForegroundColor DarkCyan
+    $refsToDelete = & git for-each-ref --format='%(refname)' `
+        refs/pull/ refs/remotes/ refs/keep-around/ 2>$null
+    if ($refsToDelete) {
+        $deleteStdin = ($refsToDelete | ForEach-Object { "delete $_" }) -join "`n"
+        $deleteStdin | & git update-ref --stdin 2>&1 | Out-Null
+        Write-Host "    Refs eliminadas: $($refsToDelete.Count)" -ForegroundColor DarkCyan
+    }
+
     # Limpiar remote github si existe de intento anterior
     & git remote remove github 2>$null
     & git remote add github "https://$GH_PAT@github.com/$GH_ORG/$repo.git"
@@ -303,6 +316,19 @@ foreach ($r in $gitRepos) {
     $pushOutput | ForEach-Object { Write-Host "    $_" -ForegroundColor Gray }
     $pushExit = $LASTEXITCODE
     Pop-Location
+
+    if ($pushExit -ne 0) {
+        $pushStr = $pushOutput -join " | "
+
+        # Caso especial: GitHub solo rechazo hidden refs (refs/pull/*) pero branches y tags si se subieron.
+        # Heuristica: si TODOS los rechazos son 'deny updating a hidden ref' lo tratamos como OK parcial.
+        $hasHiddenRefReject = $pushStr -match 'deny updating a hidden ref'
+        $hasOtherError = $pushStr -match '(rejected|error).*(non-fast-forward|protected branch|forbidden|unauthorized|cannot)'
+        if ($hasHiddenRefReject -and -not $hasOtherError) {
+            Write-Host "    Push OK (hidden refs ignoradas, branches y tags subidos)." -ForegroundColor Green
+            $pushExit = 0
+        }
+    }
 
     if ($pushExit -ne 0) {
         $pushStr = $pushOutput -join " | "
