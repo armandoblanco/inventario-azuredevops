@@ -18,6 +18,10 @@
 .PARAMETER ProjectFilter
     Filtro opcional por nombre de proyecto (wildcard). Default: * (todos)
 
+.PARAMETER TeamProject
+    Nombre exacto de un unico Team Project a auditar. Si se provee, tiene
+    precedencia sobre -ProjectFilter y solo se audita ese proyecto.
+
 .PARAMETER OutputDir
     Directorio de salida para reportes. Default: .\tfvc-audit
 
@@ -42,6 +46,10 @@
     .\Audit-TfvcRepos.ps1 -ProjectFilter "TP*"
 
 .EXAMPLE
+    # Auditar un unico Team Project (match exacto)
+    .\Audit-TfvcRepos.ps1 -TeamProject "MiProyecto"
+
+.EXAMPLE
     .\Audit-TfvcRepos.ps1 -AdoBaseUrl "https://server/tfs/Collection" -PatToken $env:ADO_PAT
 
 .NOTES
@@ -54,6 +62,8 @@ param(
     [string]$AdoBaseUrl,
 
     [string]$ProjectFilter = "*",
+
+    [string]$TeamProject,
 
     [string]$OutputDir = ".\tfvc-audit",
 
@@ -234,7 +244,15 @@ Write-Status "Obteniendo lista de proyectos..."
 $allProjects = @(Get-AllProjects -BaseUrl $AdoBaseUrl -Pat $PatToken -ApiVer $ApiVersion)
 Write-Status "Proyectos en la collection: $($allProjects.Count)"
 
-if ($ProjectFilter -ne "*") {
+if ($TeamProject) {
+    $allProjects = @($allProjects | Where-Object { $_.name -eq $TeamProject })
+    Write-Status "Filtrado a Team Project exacto '$TeamProject': $($allProjects.Count)"
+    if ($allProjects.Count -eq 0) {
+        Write-Status "El Team Project '$TeamProject' no existe en la collection." -Level "ERROR"
+        exit 1
+    }
+}
+elseif ($ProjectFilter -ne "*") {
     $allProjects = @($allProjects | Where-Object { $_.name -like $ProjectFilter })
     Write-Status "Proyectos despues de filtro '$ProjectFilter': $($allProjects.Count)"
 }
