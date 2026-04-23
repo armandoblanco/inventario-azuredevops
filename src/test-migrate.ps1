@@ -10,17 +10,19 @@
 .PARAMETER EnvFile
     Ruta al archivo .env con la configuracion. Default: ./.env (junto al script)
 .EXAMPLE
-    # 1) Copiar .env.example a .env y completar GH_PAT, ADO_PAT, ADO_BASE, GH_ORG, WORKDIR
+    # 1) Copiar .env.example a .env y completar:
+    #      GH_PAT, ADO_PAT, ADO_BASE, GH_ORG, WORKDIR, ON_REPO_EXISTS
     # 2) Ejecutar:
     .\test-migrate.ps1 -MigrationType Both
     .\test-migrate.ps1 -MigrationType Git
     .\test-migrate.ps1 -MigrationType TFVC
     .\test-migrate.ps1 -EnvFile "C:\ruta\a\mi.env"
-.EXAMPLE
-    # Alternativa sin .env (usar variables de entorno del shell):
-    $env:GH_PAT = "ghp_tu_token_github"
-    $env:ADO_PAT = "tu_pat_ado"
-    .\test-migrate.ps1 -MigrationType Both
+.NOTES
+    Log: cada ejecucion genera un archivo migrate_<yyyyMMdd_HHmmss>.log en WORKDIR
+    Politica ON_REPO_EXISTS (cuando el repo ya existe en GitHub):
+      skip     -> emite WARN y salta (default)
+      recreate -> borra el repo existente (requiere scope delete_repo) y lo vuelve a crear
+      suffix   -> crea el repo con sufijo ddMMyyyy (ej: mi-repo-23042026)
 #>
 
 [CmdletBinding()]
@@ -69,6 +71,13 @@ $GH_ORG   = if ($env:GH_ORG)   { $env:GH_ORG }   else { "BCR-Devops" }
 $WORKDIR  = if ($env:WORKDIR)  { $env:WORKDIR }  else { "C:\mp" }   # ruta corta para evitar MAX_PATH
 $GH_PAT   = $env:GH_PAT
 $ADO_PAT  = $env:ADO_PAT
+
+# Politica cuando el repo destino ya existe en GitHub: skip | recreate | suffix
+$ON_REPO_EXISTS = if ($env:ON_REPO_EXISTS) { $env:ON_REPO_EXISTS.ToLower() } else { "skip" }
+if ($ON_REPO_EXISTS -notin @("skip", "recreate", "suffix")) {
+    Write-Host "WARN: ON_REPO_EXISTS='$ON_REPO_EXISTS' invalido. Usando 'skip'." -ForegroundColor Yellow
+    $ON_REPO_EXISTS = "skip"
+}
 
 # Cargar ensamblado ZIP (.NET) para extraccion robusta con PS 5.1
 Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -187,6 +196,92 @@ function New-GitHubRepo {
     return $true
 }
 
+function Test-GitHubRepoExists {
+    param([string]$Org, [string]$RepoName, [string]$Pat)
+    $headers = @{
+        Authorization = "token $Pat"
+        Accept        = "application/vnd.github+json"
+    }
+    try {
+        $null = Invoke-RestMethod -Uri "https://api.github.com/repos/$Org/$RepoName" `
+            -Method Get -Headers $headers
+        return $true
+    }
+    catch {
+        $msg = $_.Exception.Message
+        if ($msg -match '404') { return $false }
+        Write-Diag "No se pudo verificar existencia de '$RepoName' ($msg). Asumiendo que no existe."
+        return $false
+    }
+}
+
+function Remove-GitHubRepo {
+    param([string]$Org, [string]$RepoName, [string]$Pat)
+    $headers = @{
+        Authorization = "token $Pat"
+        Accept        = "application/vnd.github+json"
+    }
+    try {
+        $null = Invoke-RestMethod -Uri "https://api.github.com/repos/$Org/$RepoName" `
+            -Method Delete -Headers $headers
+        Write-Host "    Repo '$RepoName' eliminado en GitHub." -ForegroundColor Yellow
+        return $true
+    }
+    catch {
+        $msg = $_.Exception.Message
+        Write-Host "    ERROR al eliminar repo '$RepoName': $msg" -ForegroundColor Red
+        if ($msg -match '403') {
+            Write-Diag "El PAT requiere scope 'delete_repo' para eliminar repos."
+        }
+        return $false
+    }
+}
+
+# Resuelve el nombre final del repo destino aplicando la politica ON_REPO_EXISTS.
+# Retorna objeto: Action (Create|Skip|Recreate|Suffix|Failed), TargetName, Existed
+function Resolve-TargetRepoName {
+    param(
+        [string]$Org,
+        [string]$DesiredName,
+        [string]$Pat,
+        [string]$Policy     # skip | recreate | suffix
+    )
+    $exists = Test-GitHubRepoExists -Org $Org -RepoName $DesiredName -Pat $Pat
+    if (-not $exists) {
+        return [PSCustomObject]@{ Action="Create"; TargetName=$DesiredName; Existed=$false }
+    }
+
+    Write-Host "    WARN: El repo '$Org/$DesiredName' ya existe en GitHub." -ForegroundColor Yellow
+    switch ($Policy) {
+        "skip" {
+            Write-Host "    Politica ON_REPO_EXISTS=skip -> se omite este repo." -ForegroundColor Yellow
+            return [PSCustomObject]@{ Action="Skip"; TargetName=$DesiredName; Existed=$true }
+        }
+        "recreate" {
+            Write-Host "    Politica ON_REPO_EXISTS=recreate -> borrando repo existente..." -ForegroundColor Yellow
+            $deleted = Remove-GitHubRepo -Org $Org -RepoName $DesiredName -Pat $Pat
+            if (-not $deleted) {
+                return [PSCustomObject]@{ Action="Failed"; TargetName=$DesiredName; Existed=$true }
+            }
+            Start-Sleep -Seconds 2
+            return [PSCustomObject]@{ Action="Recreate"; TargetName=$DesiredName; Existed=$true }
+        }
+        "suffix" {
+            $datePart = Get-Date -Format "ddMMyyyy"
+            $candidate = "$DesiredName-$datePart"
+            $seq = 1
+            while (Test-GitHubRepoExists -Org $Org -RepoName $candidate -Pat $Pat) {
+                $seq++
+                $candidate = "$DesiredName-$datePart-$seq"
+                if ($seq -gt 50) { break }
+            }
+            Write-Host "    Politica ON_REPO_EXISTS=suffix -> usando nombre '$candidate'." -ForegroundColor Yellow
+            return [PSCustomObject]@{ Action="Suffix"; TargetName=$candidate; Existed=$true }
+        }
+    }
+    return [PSCustomObject]@{ Action="Skip"; TargetName=$DesiredName; Existed=$true }
+}
+
 # ============================================================
 # INICIO
 # ============================================================
@@ -194,6 +289,17 @@ function New-GitHubRepo {
 if (Test-Path $WORKDIR) { Remove-Item -Recurse -Force $WORKDIR }
 New-Item -ItemType Directory -Path $WORKDIR -Force | Out-Null
 Set-Location $WORKDIR
+
+# Iniciar log de la ejecucion (captura todo Write-Host)
+$logPath = Join-Path $WORKDIR "migrate_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+try {
+    Start-Transcript -Path $logPath -Append -Force | Out-Null
+    $transcriptStarted = $true
+    Write-Host "INFO: Log de ejecucion: $logPath" -ForegroundColor DarkCyan
+} catch {
+    $transcriptStarted = $false
+    Write-Host "WARN: No se pudo iniciar Start-Transcript: $($_.Exception.Message)" -ForegroundColor Yellow
+}
 
 $results = @()
 $ErrorActionPreference = "Continue"
@@ -221,6 +327,7 @@ Write-Host "  Git repos  : $($gitRepos.Count)" -ForegroundColor Cyan
 Write-Host "  TFVC repos : $($tfvcRepos.Count)" -ForegroundColor Cyan
 Write-Host "  Directorio : $WORKDIR" -ForegroundColor Cyan
 Write-Host "  Modo        : $MigrationType" -ForegroundColor Cyan
+Write-Host "  OnExists    : $ON_REPO_EXISTS" -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Cyan
 
 # ============================================================
@@ -284,16 +391,26 @@ foreach ($r in $gitRepos) {
     }
     Write-Host "    Clone OK." -ForegroundColor Green
 
-    # 2. Crear repo en GitHub
+    # 2. Crear repo en GitHub (aplicando politica ON_REPO_EXISTS)
     Write-Host "  [2/4] Creando repo en GitHub..." -ForegroundColor Yellow
-    $created = New-GitHubRepo -Org $GH_ORG -RepoName $repo -Pat $GH_PAT
+    $resolved = Resolve-TargetRepoName -Org $GH_ORG -DesiredName $repo -Pat $GH_PAT -Policy $ON_REPO_EXISTS
+    $targetRepo = $resolved.TargetName
+    if ($resolved.Action -eq "Skip") {
+        $results += [PSCustomObject]@{ Type="Git"; Name=$repo; Status="SKIPPED_EXISTS"; Detail="destino: $targetRepo" }
+        continue
+    }
+    if ($resolved.Action -eq "Failed") {
+        $results += [PSCustomObject]@{ Type="Git"; Name=$repo; Status="GH_DELETE_FAILED"; Detail="no se pudo borrar '$targetRepo'" }
+        continue
+    }
+    $created = New-GitHubRepo -Org $GH_ORG -RepoName $targetRepo -Pat $GH_PAT
     if ($created -eq $false) {
-        $results += [PSCustomObject]@{ Type="Git"; Name=$repo; Status="GH_CREATE_FAILED"; Detail="" }
+        $results += [PSCustomObject]@{ Type="Git"; Name=$repo; Status="GH_CREATE_FAILED"; Detail="destino: $targetRepo" }
         continue
     }
 
     # 3. Push mirror
-    Write-Host "  [3/4] Push mirror a GitHub..." -ForegroundColor Yellow
+    Write-Host "  [3/4] Push mirror a GitHub ($targetRepo)..." -ForegroundColor Yellow
     Push-Location $mirrorPath
 
     # Limpiar refs que GitHub rechaza ANTES del push:
@@ -311,7 +428,7 @@ foreach ($r in $gitRepos) {
 
     # Limpiar remote github si existe de intento anterior
     & git remote remove github 2>$null
-    & git remote add github "https://$GH_PAT@github.com/$GH_ORG/$repo.git"
+    & git remote add github "https://$GH_PAT@github.com/$GH_ORG/$targetRepo.git"
     $pushOutput = & git push --mirror github 2>&1
     $pushOutput | ForEach-Object { Write-Host "    $_" -ForegroundColor Gray }
     $pushExit = $LASTEXITCODE
@@ -358,9 +475,9 @@ foreach ($r in $gitRepos) {
     $srcCount = (& git rev-list --all --count 2>&1).Trim()
     Pop-Location
 
-    $verifyPath = Join-Path $WORKDIR "${repo}_verify"
+    $verifyPath = Join-Path $WORKDIR "${targetRepo}_verify"
     if (Test-Path $verifyPath) { Remove-Item -Recurse -Force $verifyPath }
-    & git clone "https://$GH_PAT@github.com/$GH_ORG/$repo.git" $verifyPath 2>&1 | Out-Null
+    & git clone "https://$GH_PAT@github.com/$GH_ORG/$targetRepo.git" $verifyPath 2>&1 | Out-Null
     Push-Location $verifyPath
     $tgtCount = (& git rev-list --all --count 2>&1).Trim()
     Pop-Location
@@ -368,11 +485,11 @@ foreach ($r in $gitRepos) {
 
     if ($srcCount -eq $tgtCount) {
         Write-Host "    VALIDADO: $srcCount commits en source = $tgtCount en target" -ForegroundColor Green
-        $results += [PSCustomObject]@{ Type="Git"; Name=$repo; Status="OK"; Detail="$srcCount commits" }
+        $results += [PSCustomObject]@{ Type="Git"; Name=$targetRepo; Status="OK"; Detail="$srcCount commits" }
     }
     else {
         Write-Host "    MISMATCH: source=$srcCount target=$tgtCount" -ForegroundColor Red
-        $results += [PSCustomObject]@{ Type="Git"; Name=$repo; Status="MISMATCH"; Detail="src=$srcCount tgt=$tgtCount" }
+        $results += [PSCustomObject]@{ Type="Git"; Name=$targetRepo; Status="MISMATCH"; Detail="src=$srcCount tgt=$tgtCount" }
     }
 }
 
@@ -505,17 +622,27 @@ foreach ($t in $tfvcRepos) {
     }
     Write-Host "    Repo Git local creado." -ForegroundColor Green
 
-    # 4. Crear repo en GitHub y push
+    # 4. Crear repo en GitHub y push (aplicando politica ON_REPO_EXISTS)
     Write-Host "  [4/5] Creando repo en GitHub y push..." -ForegroundColor Yellow
-    $created = New-GitHubRepo -Org $GH_ORG -RepoName $gitName -Pat $GH_PAT
+    $resolved = Resolve-TargetRepoName -Org $GH_ORG -DesiredName $gitName -Pat $GH_PAT -Policy $ON_REPO_EXISTS
+    $targetRepo = $resolved.TargetName
+    if ($resolved.Action -eq "Skip") {
+        $results += [PSCustomObject]@{ Type="TFVC"; Name=$gitName; Status="SKIPPED_EXISTS"; Detail="destino: $targetRepo" }
+        continue
+    }
+    if ($resolved.Action -eq "Failed") {
+        $results += [PSCustomObject]@{ Type="TFVC"; Name=$gitName; Status="GH_DELETE_FAILED"; Detail="no se pudo borrar '$targetRepo'" }
+        continue
+    }
+    $created = New-GitHubRepo -Org $GH_ORG -RepoName $targetRepo -Pat $GH_PAT
     if ($created -eq $false) {
-        $results += [PSCustomObject]@{ Type="TFVC"; Name=$gitName; Status="GH_CREATE_FAILED"; Detail="" }
+        $results += [PSCustomObject]@{ Type="TFVC"; Name=$gitName; Status="GH_CREATE_FAILED"; Detail="destino: $targetRepo" }
         Pop-Location -ErrorAction SilentlyContinue
         continue
     }
 
     Push-Location $downloadDir
-    & git remote add origin "https://$GH_PAT@github.com/$GH_ORG/$gitName.git" 2>&1 | Out-Null
+    & git remote add origin "https://$GH_PAT@github.com/$GH_ORG/$targetRepo.git" 2>&1 | Out-Null
     $tfvcPushOutput = & git push -u origin main 2>&1
     $tfvcPushOutput | ForEach-Object { Write-Host "    $_" -ForegroundColor Gray }
     $pushExit = $LASTEXITCODE
@@ -523,25 +650,25 @@ foreach ($t in $tfvcRepos) {
 
     if ($pushExit -ne 0) {
         $tfvcPushStr = $tfvcPushOutput -join " | "
-        Write-Host "    Push FALLO (exit code: $pushExit) para '$gitName'" -ForegroundColor Red
+        Write-Host "    Push FALLO (exit code: $pushExit) para '$targetRepo'" -ForegroundColor Red
         if ($tfvcPushStr -match '401|Authentication|credentials') {
             Write-Diag "Causa probable: GH_PAT invalido o vencido."
         } elseif ($tfvcPushStr -match '403|forbidden') {
             Write-Diag "Causa probable: PAT sin permiso de escritura. Verifica scope 'repo' en el PAT."
         } elseif ($tfvcPushStr -match 'protected branch') {
-            Write-Diag "Causa probable: branch 'main' protegida. Desactiva branch protection en GitHub para el repo '$gitName'."
+            Write-Diag "Causa probable: branch 'main' protegida. Desactiva branch protection en GitHub para el repo '$targetRepo'."
         } else {
             Write-Diag "Salida git push: $tfvcPushStr"
         }
-        $results += [PSCustomObject]@{ Type="TFVC"; Name=$gitName; Status="PUSH_FAILED"; Detail="exit=$pushExit" }
+        $results += [PSCustomObject]@{ Type="TFVC"; Name=$targetRepo; Status="PUSH_FAILED"; Detail="exit=$pushExit" }
         continue
     }
     Write-Host "    Push OK." -ForegroundColor Green
 
     # 5. Validar
     Write-Host "  [5/5] Validando..." -ForegroundColor Yellow
-    Write-Host "    OK: $fileCount archivos migrados" -ForegroundColor Green
-    $results += [PSCustomObject]@{ Type="TFVC"; Name=$gitName; Status="OK"; Detail="$fileCount files" }
+    Write-Host "    OK: $fileCount archivos migrados a '$targetRepo'" -ForegroundColor Green
+    $results += [PSCustomObject]@{ Type="TFVC"; Name=$targetRepo; Status="OK"; Detail="$fileCount files" }
 }
 
 } else {
@@ -559,8 +686,12 @@ Write-Host "  RESUMEN POC - $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -Foregrou
 Write-Host "============================================================" -ForegroundColor Cyan
 
 foreach ($r in $results) {
-    $color = "Green"
-    if ($r.Status -ne "OK") { $color = "Red" }
+    $color = switch ($r.Status) {
+        "OK"              { "Green" }
+        "SKIPPED_EXISTS"  { "Yellow" }
+        "EMPTY"           { "Yellow" }
+        default           { "Red" }
+    }
     $line = "  [{0}] {1,-55} {2}  {3}" -f $r.Type, $r.Name, $r.Status, $r.Detail
     Write-Host $line -ForegroundColor $color
 }
@@ -573,3 +704,9 @@ Write-Host "============================================================" -Foreg
 $csvPath = Join-Path $WORKDIR "poc_results_$(Get-Date -Format 'yyyyMMdd_HHmmss').csv"
 $results | Export-Csv -Path $csvPath -NoTypeInformation -Encoding ASCII
 Write-Host "  Resultados exportados a: $csvPath" -ForegroundColor Cyan
+
+# Cerrar log
+if ($transcriptStarted) {
+    Write-Host "  Log de ejecucion: $logPath" -ForegroundColor Cyan
+    try { Stop-Transcript | Out-Null } catch {}
+}
