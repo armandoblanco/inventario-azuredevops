@@ -13,7 +13,7 @@
     Genera CSV y JSON consolidado.
 
 .PARAMETER AdoBaseUrl
-    URL base de la collection. Ejemplo: https://bcrtfs/tfs/BCRCollection
+    URL base de la collection. Si no se provee, se lee $env:ADO_BASE (desde .env).
 
 .PARAMETER ProjectFilter
     Filtro opcional por nombre de proyecto (wildcard). Default: * (todos)
@@ -22,7 +22,11 @@
     Directorio de salida para reportes. Default: .\tfvc-audit
 
 .PARAMETER PatToken
-    PAT de ADO Server. Si no se provee, usa credenciales default (NTLM/Kerberos).
+    PAT de ADO Server. Si no se provee, se lee $env:ADO_PAT (desde .env).
+    Si no hay PAT, usa credenciales default (NTLM/Kerberos).
+
+.PARAMETER EnvFile
+    Ruta al archivo .env con la configuracion. Default: ./.env (junto al script).
 
 .PARAMETER InactiveMonths
     Meses sin changesets para clasificar como inactivo. Default: 12
@@ -31,11 +35,14 @@
     Version de la API REST. Default: 5.0 (compatible con ADO Server 2019+)
 
 .EXAMPLE
-    .\Audit-TfvcRepos.ps1 -AdoBaseUrl "https://bcrtfs/tfs/BCRCollection"
+    # Usando .env (ADO_BASE y ADO_PAT)
+    .\Audit-TfvcRepos.ps1
 
 .EXAMPLE
-    .\Audit-TfvcRepos.ps1 -AdoBaseUrl "https://bcrtfs/tfs/BCRCollection" `
-        -ProjectFilter "TPBCRComercial" -PatToken $env:ADO_PAT
+    .\Audit-TfvcRepos.ps1 -ProjectFilter "TP*"
+
+.EXAMPLE
+    .\Audit-TfvcRepos.ps1 -AdoBaseUrl "https://server/tfs/Collection" -PatToken $env:ADO_PAT
 
 .NOTES
     Requiere: Conectividad a ADO Server, PowerShell 5.1+
@@ -44,7 +51,6 @@
 
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)]
     [string]$AdoBaseUrl,
 
     [string]$ProjectFilter = "*",
@@ -53,6 +59,8 @@ param(
 
     [string]$PatToken,
 
+    [string]$EnvFile = (Join-Path $PSScriptRoot ".env"),
+
     [int]$InactiveMonths = 12,
 
     [string]$ApiVersion = "5.0"
@@ -60,6 +68,45 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Continue"
+
+# ----------------------------------------------------------------
+# CARGA DE .env (mismo formato que test-migrate.ps1)
+# ----------------------------------------------------------------
+function Import-DotEnv {
+    param([string]$Path)
+    if (-not (Test-Path $Path)) {
+        Write-Host "INFO: No se encontro archivo .env en '$Path'. Se usaran variables de entorno actuales." -ForegroundColor DarkYellow
+        return
+    }
+    Write-Host "INFO: Cargando configuracion desde $Path" -ForegroundColor DarkCyan
+    Get-Content -Path $Path | ForEach-Object {
+        $line = $_.Trim()
+        if ([string]::IsNullOrWhiteSpace($line) -or $line.StartsWith("#")) { return }
+        $idx = $line.IndexOf("=")
+        if ($idx -lt 1) { return }
+        $key = $line.Substring(0, $idx).Trim()
+        $val = $line.Substring($idx + 1).Trim()
+        if (($val.StartsWith('"') -and $val.EndsWith('"')) -or
+            ($val.StartsWith("'") -and $val.EndsWith("'"))) {
+            $val = $val.Substring(1, $val.Length - 2)
+        }
+        [Environment]::SetEnvironmentVariable($key, $val, "Process")
+    }
+}
+
+Import-DotEnv -Path $EnvFile
+
+# Resolver parametros desde .env / variables de entorno si no vinieron por CLI
+if (-not $AdoBaseUrl) { $AdoBaseUrl = $env:ADO_BASE }
+if (-not $PatToken)   { $PatToken   = $env:ADO_PAT }
+
+if (-not $AdoBaseUrl) {
+    Write-Host "ERROR: Falta AdoBaseUrl. Pasa -AdoBaseUrl o define ADO_BASE en .env" -ForegroundColor Red
+    exit 1
+}
+if (-not $PatToken) {
+    Write-Host "WARN: No se definio ADO_PAT. Se usaran credenciales Windows (NTLM/Kerberos)." -ForegroundColor Yellow
+}
 
 # ----------------------------------------------------------------
 # Funciones auxiliares
