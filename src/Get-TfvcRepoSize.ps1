@@ -407,7 +407,13 @@ foreach ($project in $allProjects) {
             $hasTfvc = $true
 
             foreach ($item in $items) {
-                if ($item.isFolder) {
+                # Verificar si es carpeta (la propiedad puede no existir)
+                $isFolder = $false
+                if ($item.PSObject.Properties.Match('isFolder').Count -gt 0) {
+                    $isFolder = [bool]$item.isFolder
+                }
+                
+                if ($isFolder) {
                     $folderCount++
                 }
                 else {
