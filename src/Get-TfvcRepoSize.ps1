@@ -8,6 +8,8 @@
       1. Tamaño total del repositorio TFVC en bytes
       2. Conteo total de archivos y carpetas
       3. Tamaño formateado (KB, MB, GB)
+      4. Archivos grandes (mayores al umbral configurable)
+      5. Archivos no-codigo (binarios, documentos, etc.)
     Genera CSV y JSON con los resultados.
 
 .PARAMETER AdoBaseUrl
@@ -33,6 +35,17 @@
 .PARAMETER ApiVersion
     Version de la API REST. Default: 5.0 (compatible con ADO Server 2019+)
 
+.PARAMETER LargeFileSizeMB
+    Umbral en MB para considerar un archivo como "grande". Default: 5 MB
+
+.PARAMETER DetectNonCodeFiles
+    Si se activa, detecta archivos que no deberian estar en codigo fuente
+    (binarios, documentos Office, PDFs, videos, etc.). Default: $true
+
+.PARAMETER NonCodeExtensions
+    Lista adicional de extensiones a considerar como "no codigo".
+    Se combinan con la lista predeterminada.
+
 .EXAMPLE
     # Usando .env (ADO_BASE y ADO_PAT)
     .\Get-TfvcRepoSize.ps1
@@ -46,6 +59,14 @@
 
 .EXAMPLE
     .\Get-TfvcRepoSize.ps1 -AdoBaseUrl "https://server/tfs/Collection" -PatToken $env:ADO_PAT
+
+.EXAMPLE
+    # Detectar archivos mayores a 10 MB
+    .\Get-TfvcRepoSize.ps1 -LargeFileSizeMB 10
+
+.EXAMPLE
+    # Agregar extensiones adicionales a detectar
+    .\Get-TfvcRepoSize.ps1 -NonCodeExtensions @(".bak", ".tmp", ".log")
 
 .NOTES
     Requiere: Conectividad a ADO Server, PowerShell 5.1+
@@ -67,11 +88,54 @@ param(
 
     [string]$EnvFile = (Join-Path $PSScriptRoot ".env"),
 
-    [string]$ApiVersion = "5.0"
+    [string]$ApiVersion = "5.0",
+
+    [int]$LargeFileSizeMB = 5,
+
+    [bool]$DetectNonCodeFiles = $true,
+
+    [string[]]$NonCodeExtensions
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Continue"
+
+# ----------------------------------------------------------------
+# Extensiones de archivos "no codigo" predeterminadas
+# ----------------------------------------------------------------
+$DefaultNonCodeExtensions = @(
+    # Documentos Office
+    ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".ods", ".odp",
+    # PDFs y documentos
+    ".pdf", ".rtf",
+    # Imagenes
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".ico", ".psd", ".ai",
+    # Videos y audio
+    ".mp4", ".avi", ".mov", ".wmv", ".mkv", ".mp3", ".wav", ".flac",
+    # Archivos comprimidos
+    ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2",
+    # Ejecutables y binarios
+    ".exe", ".dll", ".msi", ".ocx", ".cab", ".sys",
+    # Bases de datos
+    ".mdb", ".accdb", ".sqlite", ".bak", ".mdf", ".ldf",
+    # Paquetes NuGet/npm (no deberian estar en source control)
+    ".nupkg",
+    # Archivos de instalacion
+    ".iso", ".img", ".vhd", ".vhdx",
+    # Otros binarios comunes
+    ".bin", ".dat", ".dump"
+)
+
+# Combinar extensiones custom con default si se proporcionaron
+if ($NonCodeExtensions -and $NonCodeExtensions.Count -gt 0) {
+    $AllNonCodeExtensions = ($DefaultNonCodeExtensions + $NonCodeExtensions) | Select-Object -Unique
+}
+else {
+    $AllNonCodeExtensions = $DefaultNonCodeExtensions
+}
+
+# Calcular umbral en bytes
+$LargeFileSizeBytes = $LargeFileSizeMB * 1MB
 
 # ----------------------------------------------------------------
 # CARGA DE .env
@@ -250,6 +314,25 @@ function Get-TfvcItemsRecursive {
     return $response
 }
 
+function Get-FileExtension {
+    param([string]$Path)
+    if ([string]::IsNullOrEmpty($Path)) { return "" }
+    $lastDot = $Path.LastIndexOf(".")
+    if ($lastDot -ge 0) {
+        return $Path.Substring($lastDot).ToLower()
+    }
+    return ""
+}
+
+function Test-IsNonCodeFile {
+    param(
+        [string]$Path,
+        [string[]]$Extensions
+    )
+    $ext = Get-FileExtension -Path $Path
+    return ($Extensions -contains $ext)
+}
+
 # ----------------------------------------------------------------
 # Main
 # ----------------------------------------------------------------
@@ -289,6 +372,8 @@ if ($allProjects.Count -eq 0) {
 
 # Resultados
 $sizeResults = @()
+$allLargeFiles = @()
+$allNonCodeFiles = @()
 $projectIndex = 0
 $totalSizeAllProjects = 0
 $totalFilesAllProjects = 0
@@ -311,6 +396,10 @@ foreach ($project in $allProjects) {
     $folderCount = 0
     $largestFile = $null
     $largestFileSize = 0
+    $projectLargeFiles = @()
+    $projectNonCodeFiles = @()
+    $largeFilesSize = 0
+    $nonCodeFilesSize = 0
 
     if (-not (Test-IsApiError $tfvcItems)) {
         $items = @($tfvcItems.value)
@@ -334,6 +423,37 @@ foreach ($project in $allProjects) {
                         $largestFileSize = $fileSize
                         $largestFile = $item.path
                     }
+
+                    # Detectar archivos grandes (>= umbral)
+                    if ($fileSize -ge $LargeFileSizeBytes) {
+                        $largeFileInfo = [PSCustomObject]@{
+                            Project       = $projectName
+                            FilePath      = $item.path
+                            SizeBytes     = $fileSize
+                            SizeFormatted = Format-FileSize -Bytes $fileSize
+                            Extension     = Get-FileExtension -Path $item.path
+                            Reason        = "Large file (>= $LargeFileSizeMB MB)"
+                        }
+                        $projectLargeFiles += $largeFileInfo
+                        $largeFilesSize += $fileSize
+                    }
+
+                    # Detectar archivos no-codigo
+                    if ($DetectNonCodeFiles) {
+                        $ext = Get-FileExtension -Path $item.path
+                        if (Test-IsNonCodeFile -Path $item.path -Extensions $AllNonCodeExtensions) {
+                            $nonCodeFileInfo = [PSCustomObject]@{
+                                Project       = $projectName
+                                FilePath      = $item.path
+                                SizeBytes     = $fileSize
+                                SizeFormatted = Format-FileSize -Bytes $fileSize
+                                Extension     = $ext
+                                Reason        = "Non-code file type"
+                            }
+                            $projectNonCodeFiles += $nonCodeFileInfo
+                            $nonCodeFilesSize += $fileSize
+                        }
+                    }
                 }
             }
 
@@ -343,6 +463,18 @@ foreach ($project in $allProjects) {
 
             if ($largestFile) {
                 Write-Status "  Archivo mas grande: $largestFile ($(Format-FileSize -Bytes $largestFileSize))" -Level "INFO"
+            }
+
+            # Reportar archivos grandes encontrados
+            if ($projectLargeFiles.Count -gt 0) {
+                Write-Status "  Archivos grandes (>= $LargeFileSizeMB MB): $($projectLargeFiles.Count) archivos ($(Format-FileSize -Bytes $largeFilesSize))" -Level "WARN"
+                $allLargeFiles += $projectLargeFiles
+            }
+
+            # Reportar archivos no-codigo encontrados
+            if ($projectNonCodeFiles.Count -gt 0) {
+                Write-Status "  Archivos no-codigo: $($projectNonCodeFiles.Count) archivos ($(Format-FileSize -Bytes $nonCodeFilesSize))" -Level "WARN"
+                $allNonCodeFiles += $projectNonCodeFiles
             }
 
             $totalSizeAllProjects += $totalSize
@@ -373,6 +505,10 @@ foreach ($project in $allProjects) {
         LargestFile      = $(if ($largestFile) { $largestFile } else { "N/A" })
         LargestFileSizeBytes = $largestFileSize
         LargestFileSizeFormatted = $(if ($largestFileSize -gt 0) { Format-FileSize -Bytes $largestFileSize } else { "N/A" })
+        LargeFilesCount  = $projectLargeFiles.Count
+        LargeFilesTotalSize = $(Format-FileSize -Bytes $largeFilesSize)
+        NonCodeFilesCount = $projectNonCodeFiles.Count
+        NonCodeFilesTotalSize = $(Format-FileSize -Bytes $nonCodeFilesSize)
     }
 }
 
@@ -402,6 +538,34 @@ if ($tfvcProjects.Count -gt 0) {
     Write-Status "Proyectos con TFVC (ordenados por tamaño): $tfvcCsv"
 }
 
+# CSV de archivos grandes
+if ($allLargeFiles.Count -gt 0) {
+    $largeFilesCsv = Join-Path $OutputDir "${baseFileName}_large_files.csv"
+    $allLargeFiles | Sort-Object -Property SizeBytes -Descending | Export-Csv -Path $largeFilesCsv -NoTypeInformation -Encoding UTF8
+    Write-Status "Archivos grandes (>= $LargeFileSizeMB MB): $largeFilesCsv" -Level "WARN"
+}
+
+# CSV de archivos no-codigo
+if ($allNonCodeFiles.Count -gt 0) {
+    $nonCodeCsv = Join-Path $OutputDir "${baseFileName}_non_code_files.csv"
+    $allNonCodeFiles | Sort-Object -Property SizeBytes -Descending | Export-Csv -Path $nonCodeCsv -NoTypeInformation -Encoding UTF8
+    Write-Status "Archivos no-codigo: $nonCodeCsv" -Level "WARN"
+
+    # Resumen por extension
+    $extSummary = $allNonCodeFiles | Group-Object -Property Extension | ForEach-Object {
+        [PSCustomObject]@{
+            Extension  = $_.Name
+            FileCount  = $_.Count
+            TotalSize  = ($_.Group | Measure-Object -Property SizeBytes -Sum).Sum
+            TotalSizeFormatted = Format-FileSize -Bytes ($_.Group | Measure-Object -Property SizeBytes -Sum).Sum
+        }
+    } | Sort-Object -Property TotalSize -Descending
+    
+    $extSummaryCsv = Join-Path $OutputDir "${baseFileName}_non_code_by_extension.csv"
+    $extSummary | Export-Csv -Path $extSummaryCsv -NoTypeInformation -Encoding UTF8
+    Write-Status "Resumen por extension: $extSummaryCsv" -Level "WARN"
+}
+
 # JSON consolidado
 $jsonPath = Join-Path $OutputDir "${baseFileName}.json"
 
@@ -417,7 +581,14 @@ $summary = [PSCustomObject]@{
     AverageSizePerProject    = $(if ($tfvcProjects.Count -gt 0) { Format-FileSize -Bytes ([long]($totalSizeAllProjects / $tfvcProjects.Count)) } else { "N/A" })
     LargestProject           = $(if ($tfvcProjects.Count -gt 0) { ($tfvcProjects | Sort-Object -Property TotalSizeBytes -Descending | Select-Object -First 1).Project } else { "N/A" })
     LargestProjectSize       = $(if ($tfvcProjects.Count -gt 0) { ($tfvcProjects | Sort-Object -Property TotalSizeBytes -Descending | Select-Object -First 1).TotalSizeFormatted } else { "N/A" })
+    LargeFileSizeThresholdMB = $LargeFileSizeMB
+    TotalLargeFiles          = $allLargeFiles.Count
+    TotalLargeFilesSize      = $(if ($allLargeFiles.Count -gt 0) { Format-FileSize -Bytes ($allLargeFiles | Measure-Object -Property SizeBytes -Sum).Sum } else { "0 Bytes" })
+    TotalNonCodeFiles        = $allNonCodeFiles.Count
+    TotalNonCodeFilesSize    = $(if ($allNonCodeFiles.Count -gt 0) { Format-FileSize -Bytes ($allNonCodeFiles | Measure-Object -Property SizeBytes -Sum).Sum } else { "0 Bytes" })
     Projects                 = $sizeResults
+    LargeFiles               = $allLargeFiles
+    NonCodeFiles             = $allNonCodeFiles
 }
 
 $summary | ConvertTo-Json -Depth 5 | Out-File -FilePath $jsonPath -Encoding UTF8
@@ -443,6 +614,9 @@ if ($tfvcProjects.Count -gt 0) {
     Write-Host "  Promedio por proyecto:   $(Format-FileSize -Bytes $avgSize)" -ForegroundColor White
 }
 Write-Host "================================================================" -ForegroundColor Cyan
+Write-Host "  Archivos grandes (>=$LargeFileSizeMB MB): $($allLargeFiles.Count)" -ForegroundColor $(if ($allLargeFiles.Count -gt 0) { "Yellow" } else { "Green" })
+Write-Host "  Archivos no-codigo:     $($allNonCodeFiles.Count)" -ForegroundColor $(if ($allNonCodeFiles.Count -gt 0) { "Yellow" } else { "Green" })
+Write-Host "================================================================" -ForegroundColor Cyan
 
 # Top 10 proyectos por tamaño
 if ($tfvcProjects.Count -gt 0) {
@@ -466,6 +640,40 @@ if ($largeProjects.Count -gt 0) {
     Write-Host ""
     Write-Status "ATENCION: $($largeProjects.Count) proyecto(s) con mas de 1 GB requieren atencion especial para migracion." -Level "WARN"
     Write-Status "Considerar LFS o limpieza de binarios grandes antes de migrar a Git." -Level "WARN"
+}
+
+# Top 20 archivos grandes
+if ($allLargeFiles.Count -gt 0) {
+    Write-Host ""
+    Write-Status "Top 20 archivos grandes (>= $LargeFileSizeMB MB):" -Level "WARN"
+    $top20Large = $allLargeFiles | Sort-Object -Property SizeBytes -Descending | Select-Object -First 20
+    $rank = 0
+    foreach ($file in $top20Large) {
+        $rank++
+        Write-Host "  $rank. [$($file.Project)] $($file.FilePath) - $($file.SizeFormatted)" -ForegroundColor Yellow
+    }
+}
+
+# Resumen de archivos no-codigo por extension
+if ($allNonCodeFiles.Count -gt 0) {
+    Write-Host ""
+    Write-Status "Resumen archivos no-codigo por extension:" -Level "WARN"
+    $extSummaryConsole = $allNonCodeFiles | Group-Object -Property Extension | ForEach-Object {
+        [PSCustomObject]@{
+            Extension = $_.Name
+            Count     = $_.Count
+            TotalSize = ($_.Group | Measure-Object -Property SizeBytes -Sum).Sum
+        }
+    } | Sort-Object -Property TotalSize -Descending | Select-Object -First 15
+    
+    foreach ($ext in $extSummaryConsole) {
+        $sizeFormatted = Format-FileSize -Bytes $ext.TotalSize
+        Write-Host "  $($ext.Extension): $($ext.Count) archivos ($sizeFormatted)" -ForegroundColor Yellow
+    }
+    
+    Write-Host ""
+    Write-Status "RECOMENDACION: Revisar archivos no-codigo antes de migrar a Git." -Level "WARN"
+    Write-Status "Considerar: 1) Eliminar si no son necesarios, 2) Mover a storage externo, 3) Usar Git LFS" -Level "WARN"
 }
 
 Write-Host ""
