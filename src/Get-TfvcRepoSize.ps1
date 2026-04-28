@@ -378,6 +378,29 @@ $projectIndex = 0
 $totalSizeAllProjects = 0
 $totalFilesAllProjects = 0
 
+# Preparar archivos de salida incremental
+$timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$baseFileName = "tfvc_size_$timestamp"
+
+# CSV principal en la raiz (resumen de todos los proyectos)
+$csvPath = Join-Path $OutputDir "${baseFileName}_all_projects.csv"
+
+# Crear header del CSV principal
+$projectHeaders = "Project,ProjectId,HasTfvc,TotalSizeBytes,TotalSizeFormatted,FileCount,FolderCount,LargestFile,LargestFileSizeBytes,LargestFileSizeFormatted,LargeFilesCount,LargeFilesTotalSize,NonCodeFilesCount,NonCodeFilesTotalSize"
+$projectHeaders | Out-File -FilePath $csvPath -Encoding UTF8
+
+Write-Status "CSV principal creado en: $csvPath" -Level "OK"
+Write-Status "Se creara un subfolder por cada proyecto con sus archivos de detalle" -Level "INFO"
+
+# Funcion para sanitizar nombre de carpeta
+function Get-SafeFolderName {
+    param([string]$Name)
+    # Reemplazar caracteres no validos para nombres de carpeta
+    $safeName = $Name -replace '[<>:"/\|?*]', '_'
+    $safeName = $safeName -replace '\s+', '_'
+    return $safeName
+}
+
 foreach ($project in $allProjects) {
     $projectIndex++
     $projectName = $project.name
@@ -500,7 +523,7 @@ foreach ($project in $allProjects) {
         }
     }
 
-    $sizeResults += [PSCustomObject]@{
+    $projectResult = [PSCustomObject]@{
         Project          = $projectName
         ProjectId        = $projectId
         HasTfvc          = $hasTfvc
@@ -516,26 +539,51 @@ foreach ($project in $allProjects) {
         NonCodeFilesCount = $projectNonCodeFiles.Count
         NonCodeFilesTotalSize = $(Format-FileSize -Bytes $nonCodeFilesSize)
     }
+    
+    $sizeResults += $projectResult
+    
+    # Escribir resultado del proyecto de forma incremental al CSV principal (raiz)
+    $projectLine = "`"$($projectResult.Project)`",`"$($projectResult.ProjectId)`",$($projectResult.HasTfvc),$($projectResult.TotalSizeBytes),`"$($projectResult.TotalSizeFormatted)`",$($projectResult.FileCount),$($projectResult.FolderCount),`"$($projectResult.LargestFile)`",$($projectResult.LargestFileSizeBytes),`"$($projectResult.LargestFileSizeFormatted)`",$($projectResult.LargeFilesCount),`"$($projectResult.LargeFilesTotalSize)`",$($projectResult.NonCodeFilesCount),`"$($projectResult.NonCodeFilesTotalSize)`""
+    $projectLine | Out-File -FilePath $csvPath -Append -Encoding UTF8
+    
+    # Crear subfolder del proyecto
+    $projectFolderName = Get-SafeFolderName -Name $projectName
+    $projectFolder = Join-Path $OutputDir $projectFolderName
+    New-Item -ItemType Directory -Path $projectFolder -Force | Out-Null
+    
+    # Guardar resumen del proyecto en su subfolder
+    $projectSummaryCsv = Join-Path $projectFolder "summary.csv"
+    $projectResult | Export-Csv -Path $projectSummaryCsv -NoTypeInformation -Encoding UTF8
+    
+    # Guardar archivos grandes del proyecto en su subfolder
+    if ($projectLargeFiles.Count -gt 0) {
+        $projectLargeFilesCsv = Join-Path $projectFolder "large_files.csv"
+        $projectLargeFiles | Sort-Object -Property SizeBytes -Descending | Export-Csv -Path $projectLargeFilesCsv -NoTypeInformation -Encoding UTF8
+        Write-Status "  -> $projectFolder/large_files.csv ($($projectLargeFiles.Count) archivos)" -Level "WARN"
+    }
+    
+    # Guardar archivos no-codigo del proyecto en su subfolder
+    if ($projectNonCodeFiles.Count -gt 0) {
+        $projectNonCodeCsv = Join-Path $projectFolder "non_code_files.csv"
+        $projectNonCodeFiles | Sort-Object -Property SizeBytes -Descending | Export-Csv -Path $projectNonCodeCsv -NoTypeInformation -Encoding UTF8
+        Write-Status "  -> $projectFolder/non_code_files.csv ($($projectNonCodeFiles.Count) archivos)" -Level "WARN"
+    }
+    
+    Write-Status "  Resultados guardados en: $projectFolder/" -Level "OK"
 }
 
 # ----------------------------------------------------------------
-# Generar reportes
+# Generar reportes finales consolidados en la raiz
 # ----------------------------------------------------------------
 
 Write-Host ""
-Write-Status "Generando reportes..."
-
-$timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-$baseFileName = "tfvc_size_$timestamp"
+Write-Status "Generando reportes consolidados en la raiz..."
 
 # Filtrar solo proyectos con TFVC
 $tfvcProjects = @($sizeResults | Where-Object { $_.HasTfvc -eq $true })
 $noTfvcProjects = @($sizeResults | Where-Object { $_.HasTfvc -eq $false })
 
-# CSV principal (todos los proyectos)
-$csvPath = Join-Path $OutputDir "${baseFileName}_all_projects.csv"
-$sizeResults | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
-Write-Status "Todos los proyectos: $csvPath"
+Write-Status "CSV principal completado: $csvPath"
 
 # CSV solo proyectos con TFVC ordenados por tamaño
 if ($tfvcProjects.Count -gt 0) {
@@ -544,18 +592,18 @@ if ($tfvcProjects.Count -gt 0) {
     Write-Status "Proyectos con TFVC (ordenados por tamaño): $tfvcCsv"
 }
 
-# CSV de archivos grandes
+# CSV consolidado de archivos grandes (todos los proyectos)
 if ($allLargeFiles.Count -gt 0) {
-    $largeFilesCsv = Join-Path $OutputDir "${baseFileName}_large_files.csv"
-    $allLargeFiles | Sort-Object -Property SizeBytes -Descending | Export-Csv -Path $largeFilesCsv -NoTypeInformation -Encoding UTF8
-    Write-Status "Archivos grandes (>= $LargeFileSizeMB MB): $largeFilesCsv" -Level "WARN"
+    $largeFilesCsvConsolidated = Join-Path $OutputDir "${baseFileName}_large_files_all.csv"
+    $allLargeFiles | Sort-Object -Property SizeBytes -Descending | Export-Csv -Path $largeFilesCsvConsolidated -NoTypeInformation -Encoding UTF8
+    Write-Status "Archivos grandes consolidado (>= $LargeFileSizeMB MB): $largeFilesCsvConsolidated" -Level "WARN"
 }
 
-# CSV de archivos no-codigo
+# CSV consolidado de archivos no-codigo (todos los proyectos)
 if ($allNonCodeFiles.Count -gt 0) {
-    $nonCodeCsv = Join-Path $OutputDir "${baseFileName}_non_code_files.csv"
-    $allNonCodeFiles | Sort-Object -Property SizeBytes -Descending | Export-Csv -Path $nonCodeCsv -NoTypeInformation -Encoding UTF8
-    Write-Status "Archivos no-codigo: $nonCodeCsv" -Level "WARN"
+    $nonCodeCsvConsolidated = Join-Path $OutputDir "${baseFileName}_non_code_files_all.csv"
+    $allNonCodeFiles | Sort-Object -Property SizeBytes -Descending | Export-Csv -Path $nonCodeCsvConsolidated -NoTypeInformation -Encoding UTF8
+    Write-Status "Archivos no-codigo consolidado: $nonCodeCsvConsolidated" -Level "WARN"
 
     # Resumen por extension
     $extSummary = $allNonCodeFiles | Group-Object -Property Extension | ForEach-Object {
