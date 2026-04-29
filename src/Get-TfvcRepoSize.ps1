@@ -46,6 +46,14 @@
     Lista adicional de extensiones a considerar como "no codigo".
     Se combinan con la lista predeterminada.
 
+.PARAMETER ExcludeProjects
+    Lista de nombres de Team Projects a excluir del analisis.
+    Soporta wildcards (ej: "Test*", "*Backup").
+
+.PARAMETER LogFile
+    Ruta del archivo de log. Si no se especifica, se crea automaticamente
+    en OutputDir con timestamp.
+
 .EXAMPLE
     # Usando .env (ADO_BASE y ADO_PAT)
     .\Get-TfvcRepoSize.ps1
@@ -67,6 +75,10 @@
 .EXAMPLE
     # Agregar extensiones adicionales a detectar
     .\Get-TfvcRepoSize.ps1 -NonCodeExtensions @(".bak", ".tmp", ".log")
+
+.EXAMPLE
+    # Excluir proyectos especificos
+    .\Get-TfvcRepoSize.ps1 -ExcludeProjects @("TestProject", "Sandbox*", "*Backup")
 
 .NOTES
     Requiere: Conectividad a ADO Server, PowerShell 5.1+
@@ -94,7 +106,11 @@ param(
 
     [bool]$DetectNonCodeFiles = $true,
 
-    [string[]]$NonCodeExtensions
+    [string[]]$NonCodeExtensions,
+
+    [string[]]$ExcludeProjects,
+
+    [string]$LogFile
 )
 
 Set-StrictMode -Version Latest
@@ -180,6 +196,9 @@ if (-not $PatToken) {
 # Funciones auxiliares
 # ----------------------------------------------------------------
 
+# Variable global para el archivo de log
+$script:LogFilePath = $null
+
 function Write-Status {
     param([string]$Message, [string]$Level = "INFO")
     $color = switch ($Level) {
@@ -190,7 +209,37 @@ function Write-Status {
         default   { "White" }
     }
     $timestamp = Get-Date -Format "HH:mm:ss"
-    Write-Host "[$timestamp][$Level] $Message" -ForegroundColor $color
+    $logLine = "[$timestamp][$Level] $Message"
+    Write-Host $logLine -ForegroundColor $color
+    
+    # Escribir al archivo de log si esta configurado
+    if ($script:LogFilePath) {
+        $logLine | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
+    }
+}
+
+function Write-LogOnly {
+    param([string]$Message)
+    if ($script:LogFilePath) {
+        $timestamp = Get-Date -Format "HH:mm:ss"
+        "[$timestamp] $Message" | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
+    }
+}
+
+function Test-ProjectExcluded {
+    param(
+        [string]$ProjectName,
+        [string[]]$ExcludePatterns
+    )
+    if (-not $ExcludePatterns -or $ExcludePatterns.Count -eq 0) {
+        return $false
+    }
+    foreach ($pattern in $ExcludePatterns) {
+        if ($ProjectName -like $pattern) {
+            return $true
+        }
+    }
+    return $false
 }
 
 function Format-FileSize {
@@ -347,6 +396,26 @@ Write-Host ""
 # Crear directorio de salida
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 
+# Configurar archivo de log
+if (-not $LogFile) {
+    $logTimestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+    $LogFile = Join-Path $OutputDir "tfvc_size_$logTimestamp.log"
+}
+$script:LogFilePath = $LogFile
+
+# Escribir encabezado del log
+"=" * 80 | Out-File -FilePath $script:LogFilePath -Encoding UTF8
+"TFVC Repository Size Analysis Log" | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
+"Started: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
+"Collection: $AdoBaseUrl" | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
+if ($ExcludeProjects -and $ExcludeProjects.Count -gt 0) {
+    "Excluded patterns: $($ExcludeProjects -join ', ')" | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
+}
+"=" * 80 | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
+"" | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
+
+Write-Status "Archivo de log: $script:LogFilePath" -Level "OK"
+
 # Obtener todos los proyectos
 Write-Status "Obteniendo lista de proyectos..."
 $allProjects = @(Get-AllProjects -BaseUrl $AdoBaseUrl -Pat $PatToken -ApiVer $ApiVersion)
@@ -363,6 +432,25 @@ if ($TeamProject) {
 elseif ($ProjectFilter -ne "*") {
     $allProjects = @($allProjects | Where-Object { $_.name -like $ProjectFilter })
     Write-Status "Proyectos despues de filtro '$ProjectFilter': $($allProjects.Count)"
+}
+
+# Aplicar exclusiones
+if ($ExcludeProjects -and $ExcludeProjects.Count -gt 0) {
+    $beforeExclude = $allProjects.Count
+    $excludedList = @()
+    $allProjects = @($allProjects | Where-Object { 
+        $excluded = Test-ProjectExcluded -ProjectName $_.name -ExcludePatterns $ExcludeProjects
+        if ($excluded) { $excludedList += $_.name }
+        -not $excluded
+    })
+    $excludedCount = $beforeExclude - $allProjects.Count
+    if ($excludedCount -gt 0) {
+        Write-Status "Proyectos excluidos: $excludedCount" -Level "WARN"
+        foreach ($excl in $excludedList) {
+            Write-LogOnly "  Excluido: $excl"
+        }
+    }
+    Write-Status "Proyectos a procesar despues de exclusiones: $($allProjects.Count)"
 }
 
 if ($allProjects.Count -eq 0) {
@@ -732,3 +820,21 @@ if ($allNonCodeFiles.Count -gt 0) {
 
 Write-Host ""
 Write-Status "Analisis de tamaño TFVC completado. Reportes en: $OutputDir" -Level "OK"
+
+# Cerrar el archivo de log con resumen
+if ($script:LogFilePath) {
+    "" | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
+    "=" * 80 | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
+    "RESUMEN FINAL" | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
+    "=" * 80 | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
+    "Finished: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
+    "Total proyectos analizados: $($allProjects.Count)" | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
+    "Proyectos con TFVC: $($tfvcProjects.Count)" | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
+    "Proyectos sin TFVC: $($noTfvcProjects.Count)" | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
+    "Tamaño total TFVC: $(Format-FileSize -Bytes $totalSizeAllProjects)" | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
+    "Total archivos: $totalFilesAllProjects" | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
+    "Archivos grandes (>= $LargeFileSizeMB MB): $($allLargeFiles.Count)" | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
+    "Archivos no-codigo: $($allNonCodeFiles.Count)" | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
+    "=" * 80 | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
+    Write-Status "Log guardado en: $script:LogFilePath" -Level "OK"
+}
