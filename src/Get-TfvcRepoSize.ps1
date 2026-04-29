@@ -286,13 +286,33 @@ function Invoke-AdoApi {
     }
     catch {
         $statusCode = "Unknown"
-        if ($_.Exception -and $_.Exception.PSObject.Properties.Match('Response').Count -gt 0 -and $null -ne $_.Exception.Response) {
-            $statusCode = [int]$_.Exception.Response.StatusCode
+        $errorMessage = "Unknown error"
+        
+        # Extraer mensaje de error de forma segura
+        try {
+            if ($null -ne $_.Exception) {
+                $errorMessage = $_.Exception.Message
+                
+                # Intentar obtener el status code de forma segura
+                try {
+                    if ($null -ne $_.Exception.Response) {
+                        $statusCode = [int]$_.Exception.Response.StatusCode
+                    }
+                }
+                catch {
+                    # Response no existe o no tiene StatusCode, ignorar
+                }
+            }
         }
+        catch {
+            $errorMessage = "Error desconocido al procesar excepcion"
+        }
+        
         return [PSCustomObject]@{
-            _error     = $true
+            _error      = $true
             _statusCode = $statusCode
-            _message   = $_.Exception.Message
+            _message    = $errorMessage
+            _url        = $Url
         }
     }
 }
@@ -474,7 +494,7 @@ $baseFileName = "tfvc_size_$timestamp"
 $csvPath = Join-Path $OutputDir "${baseFileName}_all_projects.csv"
 
 # Crear header del CSV principal
-$projectHeaders = "Project,ProjectId,HasTfvc,TotalSizeBytes,TotalSizeFormatted,FileCount,FolderCount,LargestFile,LargestFileSizeBytes,LargestFileSizeFormatted,LargeFilesCount,LargeFilesTotalSize,NonCodeFilesCount,NonCodeFilesTotalSize"
+$projectHeaders = "Project,ProjectId,HasTfvc,Status,ErrorDetail,TotalSizeBytes,TotalSizeFormatted,FileCount,FolderCount,LargestFile,LargestFileSizeBytes,LargestFileSizeFormatted,LargeFilesCount,LargeFilesTotalSize,NonCodeFilesCount,NonCodeFilesTotalSize"
 $projectHeaders | Out-File -FilePath $csvPath -Encoding UTF8
 
 Write-Status "CSV principal creado en: $csvPath" -Level "OK"
@@ -511,6 +531,8 @@ foreach ($project in $allProjects) {
     $projectNonCodeFiles = @()
     $largeFilesSize = 0
     $nonCodeFilesSize = 0
+    $errorStatus = "OK"
+    $errorDetail = ""
 
     if (-not (Test-IsApiError $tfvcItems)) {
         $items = @($tfvcItems.value)
@@ -603,11 +625,24 @@ foreach ($project in $allProjects) {
     }
     else {
         # 404 = no TFVC, otros codigos = error real
-        if ((Get-ApiErrorStatusCode $tfvcItems) -eq 404) {
+        $errorStatusCode = Get-ApiErrorStatusCode $tfvcItems
+        $errorMessage = Get-ApiErrorMessage $tfvcItems
+        
+        if ($errorStatusCode -eq 404) {
             Write-Status "  Sin contenido TFVC (404)." -Level "INFO"
         }
         else {
-            Write-Status "  Error consultando TFVC: $(Get-ApiErrorStatusCode $tfvcItems) - $(Get-ApiErrorMessage $tfvcItems)" -Level "WARN"
+            Write-Status "  Error consultando TFVC: $errorStatusCode - $errorMessage" -Level "WARN"
+            $errorStatus = "ERROR"
+            $errorDetail = "$errorStatusCode - $errorMessage"
+            # Logging detallado del error
+            Write-LogOnly "  [ERROR DETAILS] Project: $projectName"
+            Write-LogOnly "  [ERROR DETAILS] ProjectId: $projectId"
+            Write-LogOnly "  [ERROR DETAILS] StatusCode: $errorStatusCode"
+            Write-LogOnly "  [ERROR DETAILS] Message: $errorMessage"
+            if ($tfvcItems.PSObject.Properties.Match('_url').Count -gt 0) {
+                Write-LogOnly "  [ERROR DETAILS] URL: $($tfvcItems._url)"
+            }
         }
     }
 
@@ -615,6 +650,8 @@ foreach ($project in $allProjects) {
         Project          = $projectName
         ProjectId        = $projectId
         HasTfvc          = $hasTfvc
+        Status           = $errorStatus
+        ErrorDetail      = $errorDetail
         TotalSizeBytes   = $totalSize
         TotalSizeFormatted = $(if ($hasTfvc) { Format-FileSize -Bytes $totalSize } else { "N/A" })
         FileCount        = $fileCount
@@ -631,7 +668,7 @@ foreach ($project in $allProjects) {
     $sizeResults += $projectResult
     
     # Escribir resultado del proyecto de forma incremental al CSV principal (raiz)
-    $projectLine = "`"$($projectResult.Project)`",`"$($projectResult.ProjectId)`",$($projectResult.HasTfvc),$($projectResult.TotalSizeBytes),`"$($projectResult.TotalSizeFormatted)`",$($projectResult.FileCount),$($projectResult.FolderCount),`"$($projectResult.LargestFile)`",$($projectResult.LargestFileSizeBytes),`"$($projectResult.LargestFileSizeFormatted)`",$($projectResult.LargeFilesCount),`"$($projectResult.LargeFilesTotalSize)`",$($projectResult.NonCodeFilesCount),`"$($projectResult.NonCodeFilesTotalSize)`""
+    $projectLine = "`"$($projectResult.Project)`",`"$($projectResult.ProjectId)`",$($projectResult.HasTfvc),`"$($projectResult.Status)`",`"$($projectResult.ErrorDetail)`",$($projectResult.TotalSizeBytes),`"$($projectResult.TotalSizeFormatted)`",$($projectResult.FileCount),$($projectResult.FolderCount),`"$($projectResult.LargestFile)`",$($projectResult.LargestFileSizeBytes),`"$($projectResult.LargestFileSizeFormatted)`",$($projectResult.LargeFilesCount),`"$($projectResult.LargeFilesTotalSize)`",$($projectResult.NonCodeFilesCount),`"$($projectResult.NonCodeFilesTotalSize)`""
     $projectLine | Out-File -FilePath $csvPath -Append -Encoding UTF8
     
     # Crear subfolder del proyecto
@@ -670,8 +707,12 @@ Write-Status "Generando reportes consolidados en la raiz..."
 # Filtrar solo proyectos con TFVC
 $tfvcProjects = @($sizeResults | Where-Object { $_.HasTfvc -eq $true })
 $noTfvcProjects = @($sizeResults | Where-Object { $_.HasTfvc -eq $false })
+$errorProjects = @($sizeResults | Where-Object { $_.Status -eq "ERROR" })
 
 Write-Status "CSV principal completado: $csvPath"
+if ($errorProjects.Count -gt 0) {
+    Write-Status "Proyectos con errores: $($errorProjects.Count) - Ver log para detalles" -Level "WARN"
+}
 
 # CSV solo proyectos con TFVC ordenados por tamaño
 if ($tfvcProjects.Count -gt 0) {
@@ -717,6 +758,7 @@ $summary = [PSCustomObject]@{
     TotalProjects            = $allProjects.Count
     ProjectsWithTfvc         = $tfvcProjects.Count
     ProjectsWithoutTfvc      = $noTfvcProjects.Count
+    ProjectsWithErrors       = $errorProjects.Count
     TotalSizeBytes           = $totalSizeAllProjects
     TotalSizeFormatted       = (Format-FileSize -Bytes $totalSizeAllProjects)
     TotalFiles               = $totalFilesAllProjects
@@ -748,6 +790,9 @@ Write-Host "  Collection:              $AdoBaseUrl" -ForegroundColor White
 Write-Host "  Total proyectos:         $($allProjects.Count)" -ForegroundColor White
 Write-Host "  Proyectos con TFVC:      $($tfvcProjects.Count)" -ForegroundColor Yellow
 Write-Host "  Proyectos sin TFVC:      $($noTfvcProjects.Count)" -ForegroundColor DarkGray
+if ($errorProjects.Count -gt 0) {
+    Write-Host "  Proyectos con ERROR:     $($errorProjects.Count)" -ForegroundColor Red
+}
 Write-Host "----------------------------------------------------------------" -ForegroundColor Cyan
 Write-Host "  TAMAÑO TOTAL TFVC:       $(Format-FileSize -Bytes $totalSizeAllProjects)" -ForegroundColor Green
 Write-Host "  Total archivos:          $totalFilesAllProjects" -ForegroundColor White
@@ -831,10 +876,21 @@ if ($script:LogFilePath) {
     "Total proyectos analizados: $($allProjects.Count)" | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
     "Proyectos con TFVC: $($tfvcProjects.Count)" | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
     "Proyectos sin TFVC: $($noTfvcProjects.Count)" | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
+    "Proyectos con ERROR: $($errorProjects.Count)" | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
     "Tamaño total TFVC: $(Format-FileSize -Bytes $totalSizeAllProjects)" | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
     "Total archivos: $totalFilesAllProjects" | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
     "Archivos grandes (>= $LargeFileSizeMB MB): $($allLargeFiles.Count)" | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
     "Archivos no-codigo: $($allNonCodeFiles.Count)" | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
+    
+    # Listar proyectos con errores en el log
+    if ($errorProjects.Count -gt 0) {
+        "" | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
+        "PROYECTOS CON ERRORES:" | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
+        foreach ($errProj in $errorProjects) {
+            "  - $($errProj.Project): $($errProj.ErrorDetail)" | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
+        }
+    }
+    
     "=" * 80 | Out-File -FilePath $script:LogFilePath -Append -Encoding UTF8
     Write-Status "Log guardado en: $script:LogFilePath" -Level "OK"
 }
