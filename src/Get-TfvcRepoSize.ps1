@@ -286,7 +286,7 @@ function Invoke-AdoApi {
     }
     catch {
         $statusCode = "Unknown"
-        if ($_.Exception.Response) {
+        if ($_.Exception -and $_.Exception.PSObject.Properties.Match('Response').Count -gt 0 -and $null -ne $_.Exception.Response) {
             $statusCode = [int]$_.Exception.Response.StatusCode
         }
         return [PSCustomObject]@{
