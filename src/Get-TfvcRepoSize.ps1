@@ -344,6 +344,20 @@ function Get-ApiErrorStatusCode {
     return "Unknown"
 }
 
+function Get-SingleProject {
+    param([string]$BaseUrl, [string]$Pat, [string]$ApiVer, [string]$ProjectName)
+
+    $url = "$BaseUrl/_apis/projects/$($ProjectName)?api-version=$ApiVer"
+    $response = Invoke-AdoApi -Url $url -Pat $Pat
+
+    if (Test-IsApiError $response) {
+        Write-Status "Error obteniendo proyecto '$ProjectName': $(Get-ApiErrorMessage $response)" -Level "ERROR"
+        return $null
+    }
+
+    return $response
+}
+
 function Get-AllProjects {
     param([string]$BaseUrl, [string]$Pat, [string]$ApiVer)
 
@@ -376,9 +390,49 @@ function Get-TfvcItemsRecursive {
         [string]$ApiVer
     )
 
-    # Consultar todos los items recursivamente
+    # En proyectos con Git y TFVC, la API necesita el scopePath explícito
+    # Intentar primero con el path tradicional $/$ProjectName
+    Write-LogOnly "  Intento 1: scopePath=`$/$ProjectName"
     $tfvcUrl = "$BaseUrl/$ProjectName/_apis/tfvc/items?scopePath=`$/$ProjectName&recursionLevel=Full&api-version=$ApiVer"
     $response = Invoke-AdoApi -Url $tfvcUrl -Pat $Pat
+    
+    # Si falla con 404, el proyecto puede no tener TFVC
+    # Si falla con otro error, intentar alternativas
+    if (Test-IsApiError $response) {
+        $statusCode = Get-ApiErrorStatusCode $response
+        Write-LogOnly "  Intento 1 fallo con código: $statusCode"
+        
+        # Solo intentar alternativas si NO es 404 (404 significa sin TFVC)
+        if ($statusCode -ne 404) {
+            # Intentar sin scopePath (para estructuras TFVC no estándar)
+            Write-LogOnly "  Intento 2: sin scopePath"
+            $tfvcUrl = "$BaseUrl/$ProjectName/_apis/tfvc/items?recursionLevel=Full&api-version=$ApiVer"
+            $response2 = Invoke-AdoApi -Url $tfvcUrl -Pat $Pat
+            
+            if (-not (Test-IsApiError $response2)) {
+                Write-LogOnly "  Intento 2 exitoso"
+                return $response2
+            }
+            
+            # Último intento: solo raíz $/ con includeLinks para obtener metadata
+            Write-LogOnly "  Intento 3: scopePath=`$/ con includeLinks"
+            $tfvcUrl = "$BaseUrl/$ProjectName/_apis/tfvc/items?scopePath=`$/&recursionLevel=Full&includeLinks=true&api-version=$ApiVer"
+            $response3 = Invoke-AdoApi -Url $tfvcUrl -Pat $Pat
+            
+            if (-not (Test-IsApiError $response3)) {
+                Write-LogOnly "  Intento 3 exitoso"
+                return $response3
+            }
+            
+            Write-LogOnly "  Todos los intentos fallaron, usando respuesta original"
+        }
+        else {
+            Write-LogOnly "  Error 404 - Proyecto sin TFVC"
+        }
+    }
+    else {
+        Write-LogOnly "  Intento 1 exitoso"
+    }
 
     return $response
 }
@@ -436,22 +490,36 @@ if ($ExcludeProjects -and $ExcludeProjects.Count -gt 0) {
 
 Write-Status "Archivo de log: $script:LogFilePath" -Level "OK"
 
-# Obtener todos los proyectos
-Write-Status "Obteniendo lista de proyectos..."
-$allProjects = @(Get-AllProjects -BaseUrl $AdoBaseUrl -Pat $PatToken -ApiVer $ApiVersion)
-Write-Status "Proyectos en la collection: $($allProjects.Count)"
-
+# Obtener proyectos
 if ($TeamProject) {
-    $allProjects = @($allProjects | Where-Object { $_.name -eq $TeamProject })
-    Write-Status "Filtrado a Team Project exacto '$TeamProject': $($allProjects.Count)"
-    if ($allProjects.Count -eq 0) {
-        Write-Status "El Team Project '$TeamProject' no existe en la collection." -Level "ERROR"
-        exit 1
+    # Acceso directo al proyecto especifico (mas rapido y evita problemas con listas grandes)
+    Write-Status "Accediendo directamente al proyecto '$TeamProject'..."
+    $project = Get-SingleProject -BaseUrl $AdoBaseUrl -Pat $PatToken -ApiVer $ApiVersion -ProjectName $TeamProject
+    
+    if ($null -eq $project) {
+        Write-Status "No se pudo acceder al proyecto '$TeamProject'. Intentando con lista completa..." -Level "WARNING"
+        $allProjects = @(Get-AllProjects -BaseUrl $AdoBaseUrl -Pat $PatToken -ApiVer $ApiVersion)
+        $allProjects = @($allProjects | Where-Object { $_.name -eq $TeamProject })
+        if ($allProjects.Count -eq 0) {
+            Write-Status "El Team Project '$TeamProject' no existe en la collection." -Level "ERROR"
+            exit 1
+        }
+    }
+    else {
+        $allProjects = @($project)
+        Write-Status "Proyecto encontrado: $($project.name)" -Level "OK"
     }
 }
-elseif ($ProjectFilter -ne "*") {
-    $allProjects = @($allProjects | Where-Object { $_.name -like $ProjectFilter })
-    Write-Status "Proyectos despues de filtro '$ProjectFilter': $($allProjects.Count)"
+else {
+    # Obtener todos los proyectos
+    Write-Status "Obteniendo lista de proyectos..."
+    $allProjects = @(Get-AllProjects -BaseUrl $AdoBaseUrl -Pat $PatToken -ApiVer $ApiVersion)
+    Write-Status "Proyectos en la collection: $($allProjects.Count)"
+    
+    if ($ProjectFilter -ne "*") {
+        $allProjects = @($allProjects | Where-Object { $_.name -like $ProjectFilter })
+        Write-Status "Proyectos despues de filtro '$ProjectFilter': $($allProjects.Count)"
+    }
 }
 
 # Aplicar exclusiones
@@ -536,6 +604,8 @@ foreach ($project in $allProjects) {
 
     if (-not (Test-IsApiError $tfvcItems)) {
         $items = @($tfvcItems.value)
+        Write-LogOnly "  API Response OK - Items count: $($items.Count)"
+        
         if ($items.Count -gt 0) {
             $hasTfvc = $true
 
@@ -620,13 +690,20 @@ foreach ($project in $allProjects) {
             $totalFilesAllProjects += $fileCount
         }
         else {
-            Write-Status "  Sin contenido TFVC." -Level "INFO"
+            Write-Status "  Sin contenido TFVC (respuesta vacia)." -Level "INFO"
+            Write-LogOnly "  Response object type: $($tfvcItems.GetType().Name)"
+            Write-LogOnly "  Response has 'value' property: $($tfvcItems.PSObject.Properties.Match('value').Count -gt 0)"
+            if ($tfvcItems.PSObject.Properties.Match('count').Count -gt 0) {
+                Write-LogOnly "  Response count property: $($tfvcItems.count)"
+            }
         }
     }
     else {
         # 404 = no TFVC, otros codigos = error real
         $errorStatusCode = Get-ApiErrorStatusCode $tfvcItems
         $errorMessage = Get-ApiErrorMessage $tfvcItems
+        
+        Write-LogOnly "  API Error detected - StatusCode: $errorStatusCode, Message: $errorMessage"
         
         if ($errorStatusCode -eq 404) {
             Write-Status "  Sin contenido TFVC (404)." -Level "INFO"
