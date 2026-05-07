@@ -51,7 +51,7 @@ param(
 
     [switch]$Interactive,
 
-    [string]$EnvFile = (Join-Path $PSScriptRoot ".env")
+    [string]$EnvFile = (Join-Path (Split-Path $PSScriptRoot -Parent) ".env")
 )
 
 Set-StrictMode -Version Latest

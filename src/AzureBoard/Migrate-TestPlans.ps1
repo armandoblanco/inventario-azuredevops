@@ -120,7 +120,7 @@ param(
     [string]$IdentityMapFile,
     [string]$PlanFilter = "*",
 
-    [string]$EnvFile = (Join-Path $PSScriptRoot ".env")
+    [string]$EnvFile = (Join-Path (Split-Path $PSScriptRoot -Parent) ".env")
 )
 
 Set-StrictMode -Version Latest
@@ -483,10 +483,11 @@ function Sync-TestPlans {
         $area = $area -replace [regex]::Escape($SourceProject), $TargetProject
         $iteration = $iteration -replace [regex]::Escape($SourceProject), $TargetProject
 
+        # API moderna /testplan/plans usa areaPath (string), no area:{name}
         $body = @{
             name        = $plan.name
             description = if ($plan.PSObject.Properties.Match('description').Count -gt 0) { $plan.description } else { "" }
-            area        = @{ name = $area }
+            areaPath    = $area
             iteration   = $iteration
             state       = if ($plan.PSObject.Properties.Match('state').Count -gt 0) { $plan.state } else { "Active" }
         }
@@ -502,7 +503,7 @@ function Sync-TestPlans {
 
         Pretty-Action "Crear Plan" "'$($plan.name)' (sourceId=$($plan.id))"
         if (Should-Execute) {
-            $tgtUrl = "$TargetOrgUrl/$TargetProject/_apis/test/plans?api-version=$ApiVersion"
+            $tgtUrl = "$TargetOrgUrl/$TargetProject/_apis/testplan/plans?api-version=$ApiVersion"
             $r = Invoke-Ado -Url $tgtUrl -Method Post -Pat $TargetPat -Body $body
             if (Test-IsErr $r) { Write-Status "    ERROR: $(Get-ErrMsg $r)" -Level ERROR; continue }
             $script:PlanMap[$sid] = $r.id
@@ -546,22 +547,23 @@ function New-Suite {
         $body.queryString = $SourceSuite.queryString -replace [regex]::Escape("'$SourceProject'"), "'$TargetProject'"
     }
     if ($type -eq "RequirementTestSuite" -and $SourceSuite.PSObject.Properties.Match('requirementId').Count -gt 0) {
-        # El requirementId es un workitem. Si fue migrado debe estar en TestCaseMap o se debe mapear aparte.
         $reqId = $SourceSuite.requirementId
         if ($script:TestCaseMap.ContainsKey("$reqId")) { $reqId = $script:TestCaseMap["$reqId"] }
         $body.requirementId = $reqId
     }
-    $url = "$TargetOrgUrl/$TargetProject/_apis/test/Plans/$TargetPlanId/suites?api-version=$ApiVersion"
+    # API moderna: /_apis/testplan/Plans/{id}/suites
+    $url = "$TargetOrgUrl/$TargetProject/_apis/testplan/Plans/$TargetPlanId/suites?api-version=$ApiVersion"
     return Invoke-Ado -Url $url -Method Post -Pat $TargetPat -Body $body
 }
 
 function Add-TestCasesToSuite {
     param([int]$TargetPlanId, [int]$TargetSuiteId, [int[]]$TargetTcIds)
     if ($TargetTcIds.Count -eq 0) { return }
-    # API admite lista CSV
-    $csv = ($TargetTcIds | Sort-Object -Unique) -join ","
-    $url = "$TargetOrgUrl/$TargetProject/_apis/test/Plans/$TargetPlanId/suites/$TargetSuiteId/testcases/$csv`?api-version=$ApiVersion"
-    return Invoke-Ado -Url $url -Method Post -Pat $TargetPat
+    # API moderna: POST /_apis/testplan/Plans/{planId}/Suites/{suiteId}/TestCase
+    # Body: array [ { workItem: { id: <int> } }, ... ]
+    $payload = @($TargetTcIds | Sort-Object -Unique | ForEach-Object { @{ workItem = @{ id = $_ } } })
+    $url = "$TargetOrgUrl/$TargetProject/_apis/testplan/Plans/$TargetPlanId/Suites/$TargetSuiteId/TestCase?api-version=$ApiVersion"
+    return Invoke-Ado -Url $url -Method Post -Pat $TargetPat -Body $payload
 }
 
 function Sync-SuitesAndTestCases {
@@ -585,8 +587,8 @@ function Sync-SuitesAndTestCases {
         # Mapear root a la suite raiz que ADO crea automaticamente al crear el plan
         $rootKey = "$($plan.id)/$($root.id)"
         if ($tgtPlanId -and -not $script:SuiteMap.ContainsKey($rootKey)) {
-            # Obtener root del plan destino
-            $rUrl = "$TargetOrgUrl/$TargetProject/_apis/test/Plans/$tgtPlanId/suites?api-version=$ApiVersion"
+            # Obtener root del plan destino (API moderna testplan)
+            $rUrl = "$TargetOrgUrl/$TargetProject/_apis/testplan/Plans/$tgtPlanId/suites?api-version=$ApiVersion"
             $rr = Invoke-Ado -Url $rUrl -Pat $TargetPat
             if (-not (Test-IsErr $rr) -and $rr.value.Count -gt 0) {
                 $script:SuiteMap[$rootKey] = ($rr.value | Sort-Object id | Select-Object -First 1).id

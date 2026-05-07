@@ -87,7 +87,7 @@ param(
 
     [string]$PatToken,
 
-    [string]$EnvFile = (Join-Path $PSScriptRoot ".env"),
+    [string]$EnvFile = (Join-Path (Split-Path $PSScriptRoot -Parent) ".env"),
 
     [string]$ApiVersion = "5.0",
 
