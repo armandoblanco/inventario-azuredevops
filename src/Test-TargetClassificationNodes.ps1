@@ -105,6 +105,10 @@ if (-not $TargetOrgUrl)  { Write-Host "ERROR: Falta TargetOrgUrl" -ForegroundCol
 if (-not $TargetProject) { Write-Host "ERROR: Falta TargetProject" -ForegroundColor Red; exit 1 }
 if (-not $TargetPat)     { Write-Host "ERROR: Falta TargetPat" -ForegroundColor Red; exit 1 }
 
+# Normalizar URLs (sin barra final)
+$SourceBaseUrl = $SourceBaseUrl.TrimEnd('/')
+$TargetOrgUrl  = $TargetOrgUrl.TrimEnd('/')
+
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 $ts = Get-Date -Format "yyyyMMdd_HHmmss"
 $script:LogFilePath = Join-Path $OutputDir "validate_classification_$ts.log"
@@ -139,6 +143,23 @@ function Invoke-Ado {
 }
 function IsErr { param($r) if ($null -eq $r) { return $true }; if ($r.PSObject.Properties.Match('_error').Count -gt 0) { return [bool]$r._error }; return $false }
 function ErrMsg { param($r) if ($null -eq $r) { return "null" }; if ($r.PSObject.Properties.Match('_message').Count -gt 0) { return $r._message }; return "unknown" }
+function ErrCode { param($r) if ($null -ne $r -and $r.PSObject.Properties.Match('_statusCode').Count -gt 0) { return $r._statusCode }; return "?" }
+function ErrUrl  { param($r) if ($null -ne $r -and $r.PSObject.Properties.Match('_url').Count -gt 0) { return $r._url }; return "" }
+
+# Verificar que el proyecto destino existe y el PAT funciona
+function Test-TargetProjectAccess {
+    $url = "$TargetOrgUrl/_apis/projects/$([uri]::EscapeDataString($TargetProject))?api-version=$ApiVersion"
+    $r = Invoke-Ado -Url $url -Pat $TargetPat
+    if (IsErr $r) {
+        Log "No se puede acceder al proyecto destino '$TargetProject' en $TargetOrgUrl" "ERROR"
+        Log "  HTTP $(ErrCode $r): $(ErrMsg $r)" "ERROR"
+        Log "  URL: $url" "ERROR"
+        Log "Verifica: 1) TargetOrgUrl correcta (https://dev.azure.com/{org}), 2) nombre exacto del proyecto, 3) PAT con scope 'Project and Team (Read)' + 'Work Items (Read & Write)'" "WARN"
+        return $false
+    }
+    Log "Proyecto destino verificado: '$($r.name)' (id=$($r.id))" "OK"
+    return $true
+}
 
 # ----------------------------------------------------------------
 # Coleccion de paths referenciados en ORIGEN
@@ -242,6 +263,8 @@ Write-Host "  Mode   : $(if ($CreateMissing) { 'CREATE MISSING' } else { 'REPORT
 Write-Host "================================================================" -ForegroundColor Cyan
 Write-Host ""
 
+if (-not (Test-TargetProjectAccess)) { exit 1 }
+
 $collected = Collect-SourcePaths
 $areaPaths = @($collected.Areas) | Sort-Object
 $iterPaths = @($collected.Iterations) | Sort-Object
@@ -268,9 +291,16 @@ function Process-Set {
                 $name = $segments[$i]
                 $parent = $accumulated
                 if (-not (Test-NodeExists -StructureGroup $StructureGroup -RelativePath ($(if ($parent) { "$parent\$name" } else { $name })))) {
-                    Log "    Creando $StructureGroup '$name' bajo '$parent'" "INFO"
+                    Log "    Creando $StructureGroup '$name' bajo '$(if ($parent) { $parent } else { '<root>' })'" "INFO"
                     $r = New-Node -StructureGroup $StructureGroup -ParentRelative $parent -Name $name
-                    if (IsErr $r) { Log "      ERROR: $(ErrMsg $r)" "ERROR"; break }
+                    if (IsErr $r) {
+                        Log "      ERROR HTTP $(ErrCode $r): $(ErrMsg $r)" "ERROR"
+                        Log "      URL: $(ErrUrl $r)" "ERROR"
+                        if ("$(ErrCode $r)" -eq "404") {
+                            Log "      404 al crear suele indicar PAT sin permiso de escritura sobre Project Settings o nombre de proyecto incorrecto." "WARN"
+                        }
+                        break
+                    }
                 }
                 $accumulated = if ($parent) { "$parent\$name" } else { $name }
             }
