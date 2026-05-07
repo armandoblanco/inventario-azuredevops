@@ -214,12 +214,21 @@ function Get-IdentityFields {
 # ----------------------------------------------------------------
 # MAIN
 # ----------------------------------------------------------------
+$_toolName    = "Build-IdentityMap"
+$_toolVersion = "1.0.0"
+$_toolUpdate  = "2025-05-07"
+
 Write-Host ""
-Write-Host "================================================================" -ForegroundColor Cyan
-Write-Host "  Build Identity Map (Source -> Target)" -ForegroundColor Cyan
+Write-Host "  ┌──────────────────────────────────────────────────────────┐" -ForegroundColor Magenta
+Write-Host "  │                                                          │" -ForegroundColor Magenta
+Write-Host "  │   ■ ■  $_toolName  v$_toolVersion                    │" -ForegroundColor Magenta
+Write-Host "  │        Last update: $_toolUpdate                        │" -ForegroundColor Magenta
+Write-Host "  │        Identity Mapping (Source -> Target)               │" -ForegroundColor Magenta
+Write-Host "  │                                                          │" -ForegroundColor Magenta
+Write-Host "  └──────────────────────────────────────────────────────────┘" -ForegroundColor Magenta
+Write-Host ""
 Write-Host "  Source : $SourceBaseUrl / $SourceProject" -ForegroundColor Cyan
 Write-Host "  Target : $TargetOrgUrl / $TargetProject" -ForegroundColor Cyan
-Write-Host "================================================================" -ForegroundColor Cyan
 
 $bag = Collect-SourceIdentities
 Log "Identidades unicas en origen: $($bag.Count)" "OK"

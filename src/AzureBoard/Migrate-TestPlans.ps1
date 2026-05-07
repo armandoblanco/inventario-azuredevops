@@ -682,14 +682,23 @@ function Export-TestRunsHistory {
 # ----------------------------------------------------------------
 # MAIN
 # ----------------------------------------------------------------
+$_toolName    = "Migrate-TestPlans"
+$_toolVersion = "1.0.0"
+$_toolUpdate  = "2025-05-07"
+
 Write-Host ""
-Write-Host "================================================================" -ForegroundColor Cyan
-Write-Host "  Migrate Test Plans  (ADO Server -> ADO Services Cloud)" -ForegroundColor Cyan
+Write-Host "  ┌──────────────────────────────────────────────────────────┐" -ForegroundColor Magenta
+Write-Host "  │                                                          │" -ForegroundColor Magenta
+Write-Host "  │   ■ ■  $_toolName  v$_toolVersion                       │" -ForegroundColor Magenta
+Write-Host "  │        Last update: $_toolUpdate                        │" -ForegroundColor Magenta
+Write-Host "  │        ADO Server -> ADO Services Cloud                 │" -ForegroundColor Magenta
+Write-Host "  │                                                          │" -ForegroundColor Magenta
+Write-Host "  └──────────────────────────────────────────────────────────┘" -ForegroundColor Magenta
+Write-Host ""
 Write-Host "  Source : $SourceBaseUrl / $SourceProject" -ForegroundColor Cyan
 Write-Host "  Target : $TargetOrgUrl / $TargetProject" -ForegroundColor Cyan
 Write-Host "  Modo   : $(if (Should-Execute) { 'EXECUTE (real)' } else { 'DRY-RUN' })" -ForegroundColor Cyan
 Write-Host "  Output : $OutputDir" -ForegroundColor Cyan
-Write-Host "================================================================" -ForegroundColor Cyan
 Write-Host ""
 
 if (-not (Should-Execute)) {

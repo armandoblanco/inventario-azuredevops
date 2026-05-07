@@ -337,14 +337,22 @@ function Get-TestPointsForSuite {
 # ----------------------------------------------------------------
 # Main
 # ----------------------------------------------------------------
+$_toolName    = "Get-TestPlans"
+$_toolVersion = "1.0.0"
+$_toolUpdate  = "2025-05-07"
 
 Write-Host ""
-Write-Host "================================================================" -ForegroundColor Cyan
-Write-Host "  Test Plans Inventory - Azure DevOps Server OnPrem" -ForegroundColor Cyan
+Write-Host "  ┌──────────────────────────────────────────────────────────┐" -ForegroundColor Magenta
+Write-Host "  │                                                          │" -ForegroundColor Magenta
+Write-Host "  │   ■ ■  $_toolName  v$_toolVersion                          │" -ForegroundColor Magenta
+Write-Host "  │        Last update: $_toolUpdate                        │" -ForegroundColor Magenta
+Write-Host "  │        Test Plans Inventory                              │" -ForegroundColor Magenta
+Write-Host "  │                                                          │" -ForegroundColor Magenta
+Write-Host "  └──────────────────────────────────────────────────────────┘" -ForegroundColor Magenta
+Write-Host ""
 Write-Host "  Collection: $AdoBaseUrl" -ForegroundColor Cyan
 Write-Host "  Filtro:     $(if ($TeamProject) { $TeamProject } else { $ProjectFilter })" -ForegroundColor Cyan
 Write-Host "  Test Cases: $(if ($IncludeTestCases) { 'SI' } else { 'NO' })" -ForegroundColor Cyan
-Write-Host "================================================================" -ForegroundColor Cyan
 Write-Host ""
 
 # Crear directorio de salida

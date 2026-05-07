@@ -254,13 +254,22 @@ function Get-RelativePath {
 # ----------------------------------------------------------------
 # MAIN
 # ----------------------------------------------------------------
+$_toolName    = "Test-TargetClassificationNodes"
+$_toolVersion = "1.0.0"
+$_toolUpdate  = "2025-05-07"
+
 Write-Host ""
-Write-Host "================================================================" -ForegroundColor Cyan
-Write-Host "  Validate Classification Nodes (Areas + Iterations)" -ForegroundColor Cyan
+Write-Host "  ┌──────────────────────────────────────────────────────────┐" -ForegroundColor Magenta
+Write-Host "  │                                                          │" -ForegroundColor Magenta
+Write-Host "  │   ■ ■  $_toolName  v$_toolVersion       │" -ForegroundColor Magenta
+Write-Host "  │        Last update: $_toolUpdate                        │" -ForegroundColor Magenta
+Write-Host "  │        Validate Areas & Iterations                      │" -ForegroundColor Magenta
+Write-Host "  │                                                          │" -ForegroundColor Magenta
+Write-Host "  └──────────────────────────────────────────────────────────┘" -ForegroundColor Magenta
+Write-Host ""
 Write-Host "  Source : $SourceBaseUrl / $SourceProject" -ForegroundColor Cyan
 Write-Host "  Target : $TargetOrgUrl / $TargetProject" -ForegroundColor Cyan
 Write-Host "  Mode   : $(if ($CreateMissing) { 'CREATE MISSING' } else { 'REPORT ONLY' })" -ForegroundColor Cyan
-Write-Host "================================================================" -ForegroundColor Cyan
 Write-Host ""
 
 if (-not (Test-TargetProjectAccess)) { exit 1 }
