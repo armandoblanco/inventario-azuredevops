@@ -598,9 +598,9 @@ function Sync-SuitesAndTestCases {
         # BFS por parentSuite.id
         $byParent = @{}
         foreach ($s in $suites) {
-            $pid = if ($s.PSObject.Properties.Match('parentSuite').Count -gt 0 -and $s.parentSuite) { "$($s.parentSuite.id)" } else { "ROOT" }
-            if (-not $byParent.ContainsKey($pid)) { $byParent[$pid] = @() }
-            $byParent[$pid] += $s
+            $parentKey = if ($s.PSObject.Properties.Match('parentSuite').Count -gt 0 -and $s.parentSuite) { "$($s.parentSuite.id)" } else { "ROOT" }
+            if (-not $byParent.ContainsKey($parentKey)) { $byParent[$parentKey] = @() }
+            $byParent[$parentKey] += $s
         }
 
         $queue = New-Object System.Collections.Queue
@@ -611,7 +611,7 @@ function Sync-SuitesAndTestCases {
             $tgtCurId = $script:SuiteMap[$curKey]
 
             # Asociar test cases a la suite actual
-            $sourceTcIds = Get-SuiteTestCaseIds -PlanId $plan.id -SuiteId $current.id
+            $sourceTcIds = @(Get-SuiteTestCaseIds -PlanId $plan.id -SuiteId $current.id)
             if ($sourceTcIds.Count -gt 0) {
                 $tgtTcIds = @()
                 foreach ($tc in $sourceTcIds) {
