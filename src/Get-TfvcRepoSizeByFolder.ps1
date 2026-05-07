@@ -446,6 +446,13 @@ function Get-TfvcItemsForFolder {
             -FolderPath $folder.path -Pat $Pat -ApiVer $ApiVer `
             -CurrentDepth ($CurrentDepth + 1) -MaxSubdivisionDepth $MaxSubdivisionDepth
         $allItems += $subResult
+        # Mostrar progreso acumulado en esta rama
+        $accFiles = @($allItems | Where-Object {
+            $isF = $false
+            if ($_.PSObject.Properties.Match('isFolder').Count -gt 0) { $isF = [bool]$_.isFolder }
+            -not $isF -and -not ($_.PSObject.Properties.Match('_folderError').Count -gt 0 -and $_._folderError)
+        }).Count
+        Write-Host "${indent}  -> Progreso parcial: $accFiles archivos acumulados en esta rama" -ForegroundColor DarkGray
     }
 
     return $allItems
@@ -562,6 +569,9 @@ if ($rootFolder) {
 
 $folderIndex = 0
 $totalFolders = $topFolders.Count
+$cumulativeFiles = 0
+$cumulativeSize = [long]0
+$globalStartTime = Get-Date
 
 foreach ($folder in $topFolders) {
     $folderIndex++
@@ -606,7 +616,11 @@ foreach ($folder in $topFolders) {
         $s
     } | Measure-Object -Sum).Sum
 
+    $cumulativeFiles += $folderFiles.Count
+    $cumulativeSize += $folderSize
+    $globalElapsed = (Get-Date) - $globalStartTime
     Write-Status "  Completado en $($elapsed.ToString('mm\:ss')): $($folderFiles.Count) archivos, $(Format-FileSize -Bytes $folderSize)" -Level "OK"
+    Write-Host "  >> Progreso global: $folderIndex/$totalFolders carpetas | $cumulativeFiles archivos | $(Format-FileSize -Bytes $cumulativeSize) | Tiempo total: $($globalElapsed.ToString('hh\:mm\:ss'))" -ForegroundColor Magenta
     Write-LogOnly "  Folder $folderPath completed: $($validItems.Count) items, $($folderFiles.Count) files, $(Format-FileSize -Bytes $folderSize), elapsed=$($elapsed.ToString('mm\:ss'))"
 }
 
@@ -626,8 +640,18 @@ $projectLargeFiles = @()
 $projectNonCodeFiles = @()
 $largeFilesSize = [long]0
 $nonCodeFilesSize = [long]0
+$processedCount = 0
+$totalItemsToProcess = $allItems.Count
+$progressInterval = [Math]::Max(1, [int]($totalItemsToProcess / 20))  # Reportar ~20 veces
+
+Write-Status "Procesando $totalItemsToProcess items..." -Level "INFO"
 
 foreach ($item in $allItems) {
+    $processedCount++
+    if ($processedCount % $progressInterval -eq 0) {
+        $pct = [int](($processedCount / $totalItemsToProcess) * 100)
+        Write-Host "`r  Procesando items: $processedCount / $totalItemsToProcess ($pct%)..." -NoNewline -ForegroundColor DarkGray
+    }
     # Saltar marcadores de error
     if ($item.PSObject.Properties.Match('_folderError').Count -gt 0 -and $item._folderError) { continue }
 
@@ -677,6 +701,8 @@ foreach ($item in $allItems) {
         }
     }
 }
+Write-Host "`r  Procesando items: $totalItemsToProcess / $totalItemsToProcess (100%)   " -ForegroundColor DarkGray
+Write-Host ""
 
 # ----------------------------------------------------------------
 # Paso 5: Generar reportes
