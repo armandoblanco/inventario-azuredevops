@@ -545,10 +545,46 @@ function Sync-TestPlans {
 # ----------------------------------------------------------------
 function Get-SuitesForPlan {
     param([int]$PlanId)
+    # Usar endpoint recursivo para obtener TODAS las suites del plan
     $url = "$SourceBaseUrl/$SourceProject/_apis/test/plans/$PlanId/suites?api-version=$SourceApiVersion&`$expand=children"
     $r = Invoke-Ado -Url $url -Pat $SourcePat
-    if (Test-IsErr $r) { return @() }
-    return @($r.value)
+    if (Test-IsErr $r) { Write-Status "    ERROR Get-SuitesForPlan: $(Get-ErrMsg $r)" -Level ERROR; return @() }
+    $flat = @($r.value)
+    
+    # La API con $expand=children solo retorna el nivel 1.
+    # Necesitamos recorrer recursivamente para obtener suites anidadas.
+    $allSuites = @()
+    $queue = New-Object System.Collections.Queue
+    foreach ($s in $flat) { $queue.Enqueue($s) }
+    while ($queue.Count -gt 0) {
+        $s = $queue.Dequeue()
+        $allSuites += $s
+        # Si tiene children inline, agregarlas
+        if ($s.PSObject.Properties.Match('children').Count -gt 0 -and $null -ne $s.children) {
+            foreach ($child in @($s.children)) {
+                $queue.Enqueue($child)
+            }
+        }
+        # Tambien intentar descargar hijas via API si no vinieron inline
+        if ($s.PSObject.Properties.Match('hasChildren').Count -gt 0 -and $s.hasChildren -and
+            (-not ($s.PSObject.Properties.Match('children').Count -gt 0 -and $null -ne $s.children))) {
+            $childUrl = "$SourceBaseUrl/$SourceProject/_apis/test/plans/$PlanId/suites/$($s.id)?api-version=$SourceApiVersion&includeChildSuites=true"
+            $cr = Invoke-Ado -Url $childUrl -Pat $SourcePat
+            if (-not (Test-IsErr $cr) -and $cr.PSObject.Properties.Match('children').Count -gt 0 -and $null -ne $cr.children) {
+                foreach ($child in @($cr.children)) {
+                    $queue.Enqueue($child)
+                }
+            }
+        }
+    }
+    
+    # Log detallado
+    foreach ($s in $allSuites) {
+        $parentId = if ($s.PSObject.Properties.Match('parentSuite').Count -gt 0 -and $s.parentSuite) { $s.parentSuite.id } else { "null" }
+        Write-Status "    Suite: id=$($s.id) name='$($s.name)' type=$($s.suiteType) parent=$parentId" -Level INFO
+    }
+    
+    return $allSuites
 }
 
 function Get-SuiteTestCaseIds {
