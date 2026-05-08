@@ -396,8 +396,29 @@ function Initialize-WorkItemTypeMap {
         return
     }
 
-    $targetTypes = @($resp.value | ForEach-Object { $_.name })
-    Write-Status "  Tipos disponibles en destino: $($targetTypes -join ', ')" -Level INFO
+    $targetTypes = @()
+    if ($resp.PSObject.Properties.Match('value').Count -gt 0 -and $null -ne $resp.value) {
+        $targetTypes = @($resp.value | ForEach-Object { $_.name })
+    } elseif ($resp -is [System.Array]) {
+        $targetTypes = @($resp | ForEach-Object { $_.name })
+    } elseif ($resp.PSObject.Properties.Match('count').Count -gt 0) {
+        # Algunas versiones devuelven {count, value} pero value puede ser $null si count=0
+        Write-Status "  Respuesta tiene count=$($resp.count) pero sin .value iterable" -Level WARN
+    } else {
+        # Intentar iterar las propiedades directamente por si la respuesta es un objeto raro
+        try {
+            $targetTypes = @($resp | ForEach-Object { $_.name }) 2>$null
+        } catch { }
+    }
+
+    if ($targetTypes.Count -eq 0) {
+        Write-Status "  WARN: No se pudieron extraer tipos de WI del destino (respuesta inesperada)" -Level WARN
+        Write-Status "  Response keys: $($resp.PSObject.Properties.Name -join ', ')" -Level INFO
+        Write-Status "  Si origen y destino usan process templates distintos, use -WorkItemTypeMap" -Level WARN
+        return
+    }
+
+    Write-Status "  Tipos disponibles en destino ($($targetTypes.Count)): $($targetTypes -join ', ')" -Level INFO
 
     # Detectar que tiene el destino para el grupo de requisitos
     $hasUserStory = $targetTypes -contains "User Story"
