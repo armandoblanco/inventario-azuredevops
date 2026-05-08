@@ -311,11 +311,11 @@ function Get-SourceFeeds {
         $npmPkgs   = @()
         if ($PackageTypes -in @("All","NuGet")) {
             $r = Invoke-Ado -Url "$feedUrl/packages?protocolType=NuGet&`$top=5000&api-version=$SourceApiVersion"
-            if (-not (Test-IsErr $r) -and $r.PSObject.Properties.Match('value').Count -gt 0) { $nugetPkgs = $r.value }
+            if (-not (Test-IsErr $r) -and $r.PSObject.Properties.Match('value').Count -gt 0) { $nugetPkgs = @($r.value) }
         }
         if ($PackageTypes -in @("All","Npm")) {
             $r = Invoke-Ado -Url "$feedUrl/packages?protocolType=Npm&`$top=5000&api-version=$SourceApiVersion"
-            if (-not (Test-IsErr $r) -and $r.PSObject.Properties.Match('value').Count -gt 0) { $npmPkgs = $r.value }
+            if (-not (Test-IsErr $r) -and $r.PSObject.Properties.Match('value').Count -gt 0) { $npmPkgs = @($r.value) }
         }
 
         $role = if ($isPrincipal) { "PRINCIPAL (hub)" } else { "Satelite" }
@@ -335,7 +335,7 @@ function Get-SourceFeeds {
 function Get-TargetFeeds {
     $r = Invoke-Target -BaseUrl $TargetOrgUrl -Path "_apis/packaging/feeds"
     if (Test-IsErr $r) { return @() }
-    if ($r.PSObject.Properties.Match('value').Count -gt 0) { return $r.value }
+    if ($r.PSObject.Properties.Match('value').Count -gt 0) { return @($r.value) }
     return @()
 }
 
@@ -660,14 +660,14 @@ function Migrate-Packages {
                 # Obtener versiones
                 $versions = @()
                 if ($OnlyLatestVersion) {
-                    if ($pkg.PSObject.Properties.Match('versions').Count -gt 0 -and $pkg.versions.Count -gt 0) {
+                    if ($pkg.PSObject.Properties.Match('versions').Count -gt 0 -and @($pkg.versions).Count -gt 0) {
                         $versions = @($pkg.versions[0])
                     }
                 } else {
                     $vUrl = "$SourceBaseUrl/_apis/packaging/feeds/$feedId/packages/$($pkg.id)/versions?api-version=$SourceApiVersion"
                     $vResp = Invoke-Ado -Url $vUrl
                     if (-not (Test-IsErr $vResp) -and $vResp.PSObject.Properties.Match('value').Count -gt 0) {
-                        $versions = $vResp.value
+                        $versions = @($vResp.value)
                     } elseif ($pkg.PSObject.Properties.Match('versions').Count -gt 0) {
                         $versions = @($pkg.versions)
                     }
@@ -706,14 +706,14 @@ function Migrate-Packages {
 
                 $versions = @()
                 if ($OnlyLatestVersion) {
-                    if ($pkg.PSObject.Properties.Match('versions').Count -gt 0 -and $pkg.versions.Count -gt 0) {
+                    if ($pkg.PSObject.Properties.Match('versions').Count -gt 0 -and @($pkg.versions).Count -gt 0) {
                         $versions = @($pkg.versions[0])
                     }
                 } else {
                     $vUrl = "$SourceBaseUrl/_apis/packaging/feeds/$feedId/packages/$($pkg.id)/versions?api-version=$SourceApiVersion"
                     $vResp = Invoke-Ado -Url $vUrl
                     if (-not (Test-IsErr $vResp) -and $vResp.PSObject.Properties.Match('value').Count -gt 0) {
-                        $versions = $vResp.value
+                        $versions = @($vResp.value)
                     } elseif ($pkg.PSObject.Properties.Match('versions').Count -gt 0) {
                         $versions = @($pkg.versions)
                     }

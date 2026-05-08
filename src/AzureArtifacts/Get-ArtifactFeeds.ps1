@@ -120,6 +120,9 @@ function Invoke-Ado {
     try { return (Invoke-RestMethod @params) }
     catch {
         $msg = $_.Exception.Message
+        $detail = ""
+        try { if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $detail = $_.ErrorDetails.Message } } catch {}
+        if ($detail) { $msg = "$msg | Detail: $detail" }
         return [PSCustomObject]@{ _error = $true; _message = $msg }
     }
 }
@@ -149,7 +152,7 @@ function Get-FeedPackages {
     $r = Invoke-Ado -Url $url
     if (Test-IsErr $r) { return @() }
     $pkgs = @()
-    if ($r.PSObject.Properties.Match('value').Count -gt 0) { $pkgs = $r.value }
+    if ($r.PSObject.Properties.Match('value').Count -gt 0) { $pkgs = @($r.value) }
     return $pkgs
 }
 
@@ -158,7 +161,7 @@ function Get-PackageVersions {
     $url = "$FeedUrl/packages/$PackageId/versions?api-version=$ApiVersion"
     $r = Invoke-Ado -Url $url
     if (Test-IsErr $r) { return @() }
-    if ($r.PSObject.Properties.Match('value').Count -gt 0) { return $r.value }
+    if ($r.PSObject.Properties.Match('value').Count -gt 0) { return @($r.value) }
     return @()
 }
 
@@ -222,7 +225,7 @@ foreach ($feed in $orgFeeds) {
     Write-Status "  Feed '$feedName' (org-scoped) — upstreams: $($upstreams.Count)" -Level INFO
 
     foreach ($proto in $protocols) {
-        $pkgs = Get-FeedPackages -FeedUrl $feedUrl -FeedName $feedName -ProtocolType $proto
+        $pkgs = @(Get-FeedPackages -FeedUrl $feedUrl -FeedName $feedName -ProtocolType $proto)
         $count = $pkgs.Count
         switch ($proto) {
             "NuGet"     { $feedInfo.NuGetCount     = $count }
@@ -238,7 +241,7 @@ foreach ($feed in $orgFeeds) {
 
         foreach ($pkg in $pkgs) {
             $latestVer = ""
-            if ($pkg.PSObject.Properties.Match('versions').Count -gt 0 -and $pkg.versions.Count -gt 0) {
+            if ($pkg.PSObject.Properties.Match('versions').Count -gt 0 -and @($pkg.versions).Count -gt 0) {
                 $latestVer = $pkg.versions[0].version
             }
             $pkgEntry = [PSCustomObject]@{
@@ -250,11 +253,11 @@ foreach ($feed in $orgFeeds) {
                 PackageName  = $pkg.name
                 PackageId    = $pkg.id
                 LatestVersion = $latestVer
-                VersionCount = if ($pkg.PSObject.Properties.Match('versions').Count -gt 0) { $pkg.versions.Count } else { 0 }
+                VersionCount = if ($pkg.PSObject.Properties.Match('versions').Count -gt 0) { @($pkg.versions).Count } else { 0 }
             }
 
             if ($IncludeVersions) {
-                $versions = Get-PackageVersions -FeedUrl $feedUrl -PackageId $pkg.id
+                $versions = @(Get-PackageVersions -FeedUrl $feedUrl -PackageId $pkg.id)
                 $pkgEntry | Add-Member -MemberType NoteProperty -Name "AllVersions" -Value (($versions | ForEach-Object { $_.version }) -join ";")
                 $pkgEntry.VersionCount = $versions.Count
             }
@@ -287,7 +290,7 @@ foreach ($proj in $projects) {
     $projName = $proj.name
     Write-Status "Proyecto: $projName" -Level INFO
 
-    $projFeeds = Get-FeedsForScope -BaseUrl "$AdoBaseUrl/$projName" -ScopeLabel $projName
+    $projFeeds = @(Get-FeedsForScope -BaseUrl "$AdoBaseUrl/$projName" -ScopeLabel $projName)
     if ($projFeeds.Count -eq 0) {
         Write-Status "  Sin feeds project-scoped" -Level INFO
         continue
@@ -323,7 +326,7 @@ foreach ($proj in $projects) {
         Write-Status "  Feed '$feedName' (project: $projName) — upstreams: $($upstreams.Count)" -Level INFO
 
         foreach ($proto in $protocols) {
-            $pkgs = Get-FeedPackages -FeedUrl $feedUrl -FeedName $feedName -ProtocolType $proto
+            $pkgs = @(Get-FeedPackages -FeedUrl $feedUrl -FeedName $feedName -ProtocolType $proto)
             $count = $pkgs.Count
             switch ($proto) {
                 "NuGet"     { $feedInfo.NuGetCount     = $count }
@@ -339,7 +342,7 @@ foreach ($proj in $projects) {
 
             foreach ($pkg in $pkgs) {
                 $latestVer = ""
-                if ($pkg.PSObject.Properties.Match('versions').Count -gt 0 -and $pkg.versions.Count -gt 0) {
+                if ($pkg.PSObject.Properties.Match('versions').Count -gt 0 -and @($pkg.versions).Count -gt 0) {
                     $latestVer = $pkg.versions[0].version
                 }
                 $pkgEntry = [PSCustomObject]@{
@@ -351,11 +354,11 @@ foreach ($proj in $projects) {
                     PackageName  = $pkg.name
                     PackageId    = $pkg.id
                     LatestVersion = $latestVer
-                    VersionCount = if ($pkg.PSObject.Properties.Match('versions').Count -gt 0) { $pkg.versions.Count } else { 0 }
+                    VersionCount = if ($pkg.PSObject.Properties.Match('versions').Count -gt 0) { @($pkg.versions).Count } else { 0 }
                 }
 
                 if ($IncludeVersions) {
-                    $versions = Get-PackageVersions -FeedUrl $feedUrl -PackageId $pkg.id
+                    $versions = @(Get-PackageVersions -FeedUrl $feedUrl -PackageId $pkg.id)
                     $pkgEntry | Add-Member -MemberType NoteProperty -Name "AllVersions" -Value (($versions | ForEach-Object { $_.version }) -join ";")
                     $pkgEntry.VersionCount = $versions.Count
                 }
