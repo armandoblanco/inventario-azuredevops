@@ -584,14 +584,19 @@ function Sync-SuitesAndTestCases {
         $tgtPlanId = $entry.TargetId
         Write-Status "Plan '$($plan.name)' (source=$($plan.id) target=$tgtPlanId)"
 
-        $suites = Get-SuitesForPlan -PlanId $plan.id
-        if ($suites.Count -eq 0) { continue }
+        $suites = @(Get-SuitesForPlan -PlanId $plan.id)
+        Write-Status "  Suites obtenidas del origen: $($suites.Count)" -Level INFO
+        if ($suites.Count -eq 0) {
+            Write-Status "  Sin suites, saltando plan" -Level WARN
+            continue
+        }
 
         # Suite raiz: la primera (suiteType=StaticTestSuite, parent=null)
         $root = $suites | Where-Object {
             -not ($_.PSObject.Properties.Match('parentSuite').Count -gt 0 -and $_.parentSuite)
         } | Select-Object -First 1
         if (-not $root) { $root = $suites[0] }
+        Write-Status "  Suite raiz: '$($root.name)' (id=$($root.id))" -Level INFO
 
         # Mapear root a la suite raiz que ADO crea automaticamente al crear el plan
         $rootKey = "$($plan.id)/$($root.id)"
@@ -599,8 +604,11 @@ function Sync-SuitesAndTestCases {
             # Obtener root del plan destino (API moderna testplan)
             $rUrl = "$TargetOrgUrl/$TargetProject/_apis/testplan/Plans/$tgtPlanId/suites?api-version=$ApiVersion"
             $rr = Invoke-Ado -Url $rUrl -Pat $TargetPat
-            if (-not (Test-IsErr $rr) -and $rr.value.Count -gt 0) {
-                $script:SuiteMap[$rootKey] = ($rr.value | Sort-Object id | Select-Object -First 1).id
+            if (-not (Test-IsErr $rr) -and @($rr.value).Count -gt 0) {
+                $script:SuiteMap[$rootKey] = (@($rr.value) | Sort-Object id | Select-Object -First 1).id
+                Write-Status "  Suite raiz mapeada: $rootKey -> $($script:SuiteMap[$rootKey])" -Level OK
+            } else {
+                Write-Status "  ERROR: No se pudo obtener suite raiz del plan destino $tgtPlanId" -Level ERROR
             }
         }
 
@@ -611,6 +619,7 @@ function Sync-SuitesAndTestCases {
             if (-not $byParent.ContainsKey($parentKey)) { $byParent[$parentKey] = @() }
             $byParent[$parentKey] += $s
         }
+        Write-Status "  Grupos por padre: $($byParent.Keys.Count) (claves: $($byParent.Keys -join ', '))" -Level INFO
 
         $queue = New-Object System.Collections.Queue
         $queue.Enqueue($root)
@@ -618,6 +627,7 @@ function Sync-SuitesAndTestCases {
             $current = $queue.Dequeue()
             $curKey = "$($plan.id)/$($current.id)"
             $tgtCurId = $script:SuiteMap[$curKey]
+            Write-Status "  Procesando suite '$($current.name)' (id=$($current.id)) -> target=$tgtCurId" -Level INFO
 
             # Asociar test cases a la suite actual
             $sourceTcIds = @(Get-SuiteTestCaseIds -PlanId $plan.id -SuiteId $current.id)
@@ -630,25 +640,29 @@ function Sync-SuitesAndTestCases {
                 Pretty-Action "Asociar TCs a suite" "suite='$($current.name)' count=$($tgtTcIds.Count)"
                 if (Should-Execute -and $tgtCurId -and $tgtTcIds.Count -gt 0) {
                     $r = Add-TestCasesToSuite -TargetPlanId $tgtPlanId -TargetSuiteId $tgtCurId -TargetTcIds $tgtTcIds
-                    if (Test-IsErr $r) { Write-Status "      ERROR: $(Get-ErrMsg $r)" -Level ERROR }
+                    if (Test-IsErr $r) { Write-Status "      ERROR asociar TCs: $(Get-ErrMsg $r)" -Level ERROR }
+                    else { Write-Status "      TCs asociados OK" -Level OK }
                 }
             }
 
             # Crear hijas
             $children = @()
-            if ($byParent.ContainsKey("$($current.id)")) { $children = $byParent["$($current.id)"] }
+            if ($byParent.ContainsKey("$($current.id)")) { $children = @($byParent["$($current.id)"]) }
+            Write-Status "  Hijas de '$($current.name)': $($children.Count)" -Level INFO
             foreach ($child in $children) {
                 $childKey = "$($plan.id)/$($child.id)"
                 if ($script:SuiteMap.ContainsKey($childKey)) {
+                    Write-Status "    Suite '$($child.name)' ya mapeada -> $($script:SuiteMap[$childKey])" -Level INFO
                     $queue.Enqueue($child)
                     continue
                 }
                 Pretty-Action "Crear Suite" "'$($child.name)' type=$($child.suiteType) parent=$($current.name)"
                 if (Should-Execute -and $tgtCurId) {
                     $r = New-Suite -TargetPlanId $tgtPlanId -TargetParentId $tgtCurId -SourceSuite $child
-                    if (Test-IsErr $r) { Write-Status "      ERROR: $(Get-ErrMsg $r)" -Level ERROR; continue }
-                    $newId = if ($r.PSObject.Properties.Match('value').Count -gt 0 -and $r.value.Count -gt 0) { $r.value[0].id } else { $r.id }
+                    if (Test-IsErr $r) { Write-Status "      ERROR crear suite: $(Get-ErrMsg $r)" -Level ERROR; continue }
+                    $newId = if ($r.PSObject.Properties.Match('value').Count -gt 0 -and @($r.value).Count -gt 0) { $r.value[0].id } else { $r.id }
                     $script:SuiteMap[$childKey] = $newId
+                    Write-Status "    Suite creada: $childKey -> $newId" -Level OK
                     Save-Map $script:SuiteMap $paths.Suite
                 }
                 $queue.Enqueue($child)

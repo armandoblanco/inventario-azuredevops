@@ -9,6 +9,12 @@ inventarios/
 auditorias/
 migration_data/
 
+# Migration runtime data (mappings, logs, staging)
+**/testplans-migration/
+**/artifacts-inventory/
+**/artifacts-migration/
+**/artifacts-staging/
+
 # Python cache
 __pycache__/
 *.py[cod]
