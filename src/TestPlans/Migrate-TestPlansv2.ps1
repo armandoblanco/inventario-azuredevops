@@ -92,6 +92,12 @@
     Ruta a JSON con mapping de requisitos { "sourceReqId": targetReqId, ... }.
     Util cuando los requisitos ya fueron migrados por DMT.
 
+.PARAMETER WorkItemTypeMap
+    Hashtable para mapear tipos de work item entre process templates distintos.
+    Ej: @{ "Product Backlog Item" = "User Story" } para Scrum -> Agile.
+    Si no se proporciona, el script auto-detecta los tipos del destino
+    y construye el mapeo automaticamente.
+
 .PARAMETER PlanFilter
     Filtro wildcard por nombre de Test Plan. Default: * (todos).
 
@@ -138,6 +144,7 @@ param(
     [string]$TestCaseMappingFile,
     [string]$RequirementMappingFile,
     [string]$IdentityMapFile,
+    [hashtable]$WorkItemTypeMap = @{},
     [string]$PlanFilter      = "*",
     [string]$EnvFile         = (Join-Path (Split-Path $PSScriptRoot -Parent) ".env")
 )
@@ -352,6 +359,77 @@ function Resolve-TargetIdentityString {
 # ----------------------------------------------------------------
 function Should-Execute { return [bool]$Execute }
 
+# ----------------------------------------------------------------
+# Work Item Type Map: cross-process-template support
+# ----------------------------------------------------------------
+# Cuando el proyecto origen y destino usan process templates distintos
+# (ej: Scrum en on-prem -> Agile en cloud), los tipos de work item
+# del grupo de requisitos difieren. Este mapa resuelve la conversion.
+#
+# Mapeos conocidos entre process templates:
+#   Scrum:  Product Backlog Item
+#   Agile:  User Story
+#   CMMI:   Requirement
+#   Basic:  Issue
+#
+$script:ResolvedWiTypeMap = @{}
+
+function Initialize-WorkItemTypeMap {
+    Write-Status "=== Detectando Work Item Types del destino ===" -Level OK
+
+    # Si el usuario paso un mapa explicito, usarlo
+    if ($WorkItemTypeMap -and $WorkItemTypeMap.Count -gt 0) {
+        $script:ResolvedWiTypeMap = $WorkItemTypeMap
+        Write-Status "  WorkItemTypeMap proporcionado por usuario: $($WorkItemTypeMap.Count) entradas" -Level OK
+        foreach ($k in $WorkItemTypeMap.Keys) {
+            Write-Status "    '$k' -> '$($WorkItemTypeMap[$k])'" -Level INFO
+        }
+        return
+    }
+
+    # Auto-detectar: consultar los tipos de WI disponibles en el proyecto destino
+    $typesUrl = "$TargetOrgUrl/$TargetProject/_apis/wit/workitemtypes?api-version=$ApiVersion"
+    $resp = Invoke-Ado -Url $typesUrl -Pat $TargetPat
+    if (Test-IsErr $resp) {
+        Write-Status "  WARN: No se pudieron obtener los WI types del destino: $(Get-ErrMsg $resp)" -Level WARN
+        Write-Status "  Si origen y destino usan process templates distintos, use -WorkItemTypeMap" -Level WARN
+        return
+    }
+
+    $targetTypes = @($resp.value | ForEach-Object { $_.name })
+    Write-Status "  Tipos disponibles en destino: $($targetTypes -join ', ')" -Level INFO
+
+    # Detectar que tiene el destino para el grupo de requisitos
+    $hasUserStory = $targetTypes -contains "User Story"
+    $hasPBI       = $targetTypes -contains "Product Backlog Item"
+    $hasRequirement = $targetTypes -contains "Requirement"
+    $hasIssue     = $targetTypes -contains "Issue"
+
+    # Construir mapeo automatico solo para tipos que NO existen en destino
+    if (-not $hasPBI -and $hasUserStory) {
+        $script:ResolvedWiTypeMap["Product Backlog Item"] = "User Story"
+        Write-Status "  Auto-map: 'Product Backlog Item' -> 'User Story' (Scrum->Agile)" -Level OK
+    }
+    if (-not $hasUserStory -and $hasPBI) {
+        $script:ResolvedWiTypeMap["User Story"] = "Product Backlog Item"
+        Write-Status "  Auto-map: 'User Story' -> 'Product Backlog Item' (Agile->Scrum)" -Level OK
+    }
+    if (-not $hasPBI -and -not $hasUserStory -and $hasRequirement) {
+        $script:ResolvedWiTypeMap["Product Backlog Item"] = "Requirement"
+        $script:ResolvedWiTypeMap["User Story"] = "Requirement"
+        Write-Status "  Auto-map: PBI/UserStory -> 'Requirement' (->CMMI)" -Level OK
+    }
+    if (-not $hasPBI -and -not $hasUserStory -and -not $hasRequirement -and $hasIssue) {
+        $script:ResolvedWiTypeMap["Product Backlog Item"] = "Issue"
+        $script:ResolvedWiTypeMap["User Story"] = "Issue"
+        Write-Status "  Auto-map: PBI/UserStory -> 'Issue' (->Basic)" -Level OK
+    }
+
+    if ($script:ResolvedWiTypeMap.Count -eq 0) {
+        Write-Status "  No se requiere mapeo de tipos (mismo process template o tipos compatibles)" -Level INFO
+    }
+}
+
 function Pretty-Action {
     param([string]$Verb, [string]$Detail)
     if (Should-Execute) { Write-Status "$Verb $Detail" -Level OK }
@@ -548,6 +626,13 @@ function New-RequirementInTarget {
     $wiType = "User Story"
     if ($SourceWi.fields.PSObject.Properties.Match('System.WorkItemType').Count -gt 0) {
         $wiType = $SourceWi.fields."System.WorkItemType"
+    }
+
+    # Aplicar mapping de tipos entre process templates (ej: Scrum->Agile)
+    if ($script:ResolvedWiTypeMap.ContainsKey($wiType)) {
+        $mappedType = $script:ResolvedWiTypeMap[$wiType]
+        Write-Status "    Tipo mapeado: '$wiType' -> '$mappedType'" -Level INFO
+        $wiType = $mappedType
     }
 
     $fieldsToCopy = @(
@@ -1032,6 +1117,8 @@ Write-Host ""
 if (-not (Should-Execute)) {
     Write-Status "Modo DRY-RUN: no se realizaran cambios en destino. Use -Execute para aplicar." -Level WARN
 }
+
+Initialize-WorkItemTypeMap
 
 Sync-TestConfigurations
 Sync-TestCases
