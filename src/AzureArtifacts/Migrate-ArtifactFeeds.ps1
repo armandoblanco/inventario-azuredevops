@@ -616,7 +616,7 @@ function Push-NuGetPackage {
         $fullBody = $bodyStream.ToArray()
         $bodyStream.Close()
 
-        Invoke-RestMethod -Uri $pushUrl -Method PUT -Headers @{ "Authorization" = "Basic $b64" } `
+        Invoke-RestMethod -Uri $pushUrl -Method PUT -Headers @{ "Authorization" = "Basic $b64"; "X-NuGet-ApiKey" = $apiKey } `
             -Body $fullBody -ContentType "multipart/form-data; boundary=$boundary" `
             -UseBasicParsing | Out-Null
         return $true
