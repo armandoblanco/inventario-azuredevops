@@ -590,16 +590,34 @@ function Push-NuGetPackage {
         if ($LASTEXITCODE -eq 0) { return $true }
     }
 
-    # Opcion 3: REST API PUT
+    # Opcion 3: REST API — multipart/form-data (requerido por ADO Services)
     $b64 = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$TargetPat"))
-    $headers = @{
-        "Authorization" = "Basic $b64"
-        "X-NuGet-ApiKey" = $TargetPat
-    }
+    $pushUrl = "$pkgsUrl/$TargetProject/_packaging/$FeedName/nuget/v2"
     try {
-        $bytes = [System.IO.File]::ReadAllBytes($FilePath)
-        Invoke-RestMethod -Uri $feedUrl -Method PUT -Headers $headers -Body $bytes `
-            -ContentType "application/octet-stream" -UseBasicParsing | Out-Null
+        $boundary = [System.Guid]::NewGuid().ToString()
+        $fileBytes = [System.IO.File]::ReadAllBytes($FilePath)
+        $fileName  = [System.IO.Path]::GetFileName($FilePath)
+        $enc = [System.Text.Encoding]::UTF8
+
+        $bodyLines = @(
+            "--$boundary",
+            "Content-Disposition: form-data; name=`"package`"; filename=`"$fileName`"",
+            "Content-Type: application/octet-stream",
+            ""
+        )
+        $headerBytes = $enc.GetBytes(($bodyLines -join "`r`n") + "`r`n")
+        $footerBytes = $enc.GetBytes("`r`n--$boundary--`r`n")
+
+        $bodyStream = New-Object System.IO.MemoryStream
+        $bodyStream.Write($headerBytes, 0, $headerBytes.Length)
+        $bodyStream.Write($fileBytes, 0, $fileBytes.Length)
+        $bodyStream.Write($footerBytes, 0, $footerBytes.Length)
+        $fullBody = $bodyStream.ToArray()
+        $bodyStream.Close()
+
+        Invoke-RestMethod -Uri $pushUrl -Method PUT -Headers @{ "Authorization" = "Basic $b64" } `
+            -Body $fullBody -ContentType "multipart/form-data; boundary=$boundary" `
+            -UseBasicParsing | Out-Null
         return $true
     } catch {
         if ($_.Exception.Message -match 'already exists|conflict|409') { return $true }
