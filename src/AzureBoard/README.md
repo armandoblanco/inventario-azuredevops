@@ -16,6 +16,7 @@ Azure DevOps Server **OnPrem** hacia Azure DevOps Services **Cloud**.
 | `Test-TargetClassificationNodes.ps1` | Pre-valida que las Áreas e Iteraciones referenciadas existan en destino. Con `-CreateMissing` las crea respetando jerarquía. |
 | `Build-IdentityMap.ps1` | Mapea identidades (owners, asignados) origen → destino consultando `vssps.dev.azure.com/{org}/_apis/identities`. |
 | `Migrate-TestPlans.ps1` | Migración por fases (configs, test cases, plans, suites, runs export) con **dry-run por defecto** y mappings persistentes JSON. |
+| `Migrate-ProjectUsers.ps1` | **(Opcional)** Migra usuarios y Teams del proyecto origen al destino: alta con licencia, creación de teams y asignación de miembros. |
 
 ---
 
@@ -116,6 +117,58 @@ Revisar el log y los `[DRY-RUN]` antes de seguir.
 > línea en PowerShell** (equivalente a `\` en bash). Permite partir un comando
 > largo. También puedes escribir todo en una sola línea sin backticks.
 
+### Paso 6 (Opcional) — Migrar Usuarios y Teams
+
+Si necesita dar de alta a los usuarios del proyecto origen en la organización
+destino y recrear los Teams con sus miembros, use `Migrate-ProjectUsers.ps1`.
+
+**Requisitos adicionales del PAT destino:**
+- **Member Entitlement Management** → Read & Write
+- **Graph** → Read & Manage
+
+#### 6a — Generar inventario de usuarios
+
+```powershell
+.\Migrate-ProjectUsers.ps1 -SourceProject "TPBCRSICCRED"
+```
+
+Genera `users-migration/users-manifest.csv` con todos los usuarios y sus teams.
+
+#### 6b — Completar el CSV
+
+Abra `users-manifest.csv` y complete:
+
+| Columna | Descripción |
+|---|---|
+| `TargetEmail` | Email/UPN del usuario en Azure AD (Entra ID) |
+| `AccessLevel` | `stakeholder`, `express` (Basic) o `advanced` (VS Enterprise) |
+| `GroupType` | `projectReader`, `projectContributor` o `projectAdministrator` |
+| `Teams` | Teams separados por `;` (se pre-llenan del origen) |
+
+Elimine filas de usuarios que **no** desee migrar (cuentas de servicio, etc.).
+
+#### 6c — Dry-run
+
+```powershell
+.\Migrate-ProjectUsers.ps1 -SourceProject "TPBCRSICCRED" `
+    -ManifestFile ".\users-migration\users-manifest.csv"
+```
+
+#### 6d — Ejecución real
+
+```powershell
+.\Migrate-ProjectUsers.ps1 -SourceProject "TPBCRSICCRED" `
+    -ManifestFile ".\users-migration\users-manifest.csv" -Execute
+```
+
+#### Opciones adicionales
+
+| Flag | Efecto |
+|---|---|
+| `-SkipTeamCreation` | Solo da de alta usuarios, no crea Teams |
+| `-SkipMemberships` | Crea Teams pero no asigna miembros |
+| `-DefaultAccessLevel express` | Nivel de licencia por defecto en el CSV template |
+
 ---
 
 ## 4. Variantes útiles
@@ -160,6 +213,15 @@ correr el mismo comando: lo ya migrado se omite (idempotente).
 | `classification_validation_*.csv\|.json` | reporte de áreas/iteraciones |
 | `migrate_testplans_*.log` | log detallado de la corrida |
 | `test-runs-export\run_*.json` | export histórico de ejecuciones (no se recrean) |
+
+### En `users-migration\` (si se usa Paso 6)
+
+| Archivo | Contenido |
+|---|---|
+| `users-manifest.csv` | CSV editable con usuarios a migrar |
+| `source-inventory.json` | Inventario completo de teams y miembros del origen |
+| `mapping-users.json` | email → descriptor/id en destino |
+| `mapping-teams.json` | teamName → teamId en destino |
 
 ---
 
