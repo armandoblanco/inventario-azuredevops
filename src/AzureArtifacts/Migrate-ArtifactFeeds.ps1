@@ -171,6 +171,10 @@ $feedsUrl = "https://feeds.dev.azure.com/$orgName"
 New-Item -ItemType Directory -Path $OutputDir  -Force | Out-Null
 New-Item -ItemType Directory -Path $StagingDir -Force | Out-Null
 
+# Resolver a rutas absolutas (evita desajuste PowerShell vs .NET CurrentDirectory)
+$OutputDir  = (Resolve-Path $OutputDir).Path
+$StagingDir = (Resolve-Path $StagingDir).Path
+
 # Logging
 $logTimestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $logFile = Join-Path $OutputDir "migrate_artifacts_$logTimestamp.log"
@@ -549,6 +553,10 @@ function Download-SourcePackage {
 
     try {
         Invoke-WebRequest @params
+        if (-not (Test-Path $outPath)) {
+            Write-Status "    ERROR descarga $PackageName@$Version : archivo no creado tras descarga" -Level ERROR
+            return $null
+        }
         return $outPath
     } catch {
         Write-Status "    ERROR descarga $PackageName@$Version : $($_.Exception.Message)" -Level ERROR
