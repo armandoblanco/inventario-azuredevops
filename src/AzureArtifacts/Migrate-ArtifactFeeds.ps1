@@ -113,7 +113,7 @@ param(
     [string]$FeedFilter = "*",
     [string]$StagingDir = ".\artifacts-staging",
     [string]$OutputDir  = ".\artifacts-migration",
-    [string]$SourceApiVersion = "5.0",
+    [string]$SourceApiVersion = "5.0-preview",
     [string]$TargetApiVersion = "7.1",
     [string]$PackageTypes = "All",
 
