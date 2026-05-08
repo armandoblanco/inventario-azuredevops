@@ -118,6 +118,9 @@ function Invoke-Ado {
     catch {
         $code = "Unknown"; $msg = $_.Exception.Message
         try { if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode } } catch {}
+        $detail = ""
+        try { if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $detail = $_.ErrorDetails.Message } } catch {}
+        if ($detail) { $msg = "$msg | Detail: $detail" }
         return [PSCustomObject]@{ _error=$true; _statusCode=$code; _message=$msg }
     }
 }
@@ -157,7 +160,7 @@ function Collect-SourceIdentities {
         query = "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = '$SourceProject' AND [System.WorkItemType] = 'Test Case'"
     }
     $wr = Invoke-Ado -Url "$SourceBaseUrl/$SourceProject/_apis/wit/wiql?api-version=$SourceApiVersion" -Method Post -Pat $SourcePat -Body $wiql
-    if (-not (IsErr $wr) -and $wr.workItems.Count -gt 0) {
+    if (-not (IsErr $wr) -and @($wr.workItems).Count -gt 0) {
         $ids = @($wr.workItems | ForEach-Object { $_.id })
         $batchSize = 200
         for ($i = 0; $i -lt $ids.Count; $i += $batchSize) {

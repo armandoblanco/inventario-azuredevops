@@ -197,7 +197,9 @@ function Invoke-Ado {
     try { return (Invoke-RestMethod @params) }
     catch {
         $msg = $_.Exception.Message
-        try { $msg = ($_ | ConvertFrom-Json).message } catch {}
+        $detail = ""
+        try { if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $detail = $_.ErrorDetails.Message } } catch {}
+        if ($detail) { $msg = "$msg | Detail: $detail" }
         return [PSCustomObject]@{ _error = $true; _message = $msg; _status = $_.Exception.Response.StatusCode }
     }
 }
@@ -320,10 +322,10 @@ function Test-UserExists {
     $filter = "name eq '$Email'"
     $r = Invoke-Target -BaseUrl $vsaexUrl -Path "_apis/userentitlements?`$filter=$filter" -ApiVer "7.1-preview.4"
     if (Test-IsErr $r) { return $null }
-    if ($r.PSObject.Properties.Match('members').Count -gt 0 -and $r.members.Count -gt 0) {
+    if ($r.PSObject.Properties.Match('members').Count -gt 0 -and @($r.members).Count -gt 0) {
         return $r.members[0]
     }
-    if ($r.PSObject.Properties.Match('value').Count -gt 0 -and $r.value.Count -gt 0) {
+    if ($r.PSObject.Properties.Match('value').Count -gt 0 -and @($r.value).Count -gt 0) {
         return $r.value[0]
     }
     return $null
