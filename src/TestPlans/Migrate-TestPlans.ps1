@@ -353,7 +353,8 @@ function Sync-TestConfigurations {
         }
         Pretty-Action "Crear Configuration" "'$($cfg.name)'"
         if (Should-Execute) {
-            $tgtUrl = "$TargetOrgUrl/$TargetProject/_apis/test/configurations?api-version=$ApiVersion"
+            # ADO Services usa _apis/testplan/configurations (no _apis/test/configurations)
+            $tgtUrl = "$TargetOrgUrl/$TargetProject/_apis/testplan/configurations?api-version=$ApiVersion"
             $r = Invoke-Ado -Url $tgtUrl -Method Post -Pat $TargetPat -Body $body
             if (Test-IsErr $r) { Write-Status "    ERROR: $(Get-ErrMsg $r)" -Level ERROR; continue }
             $script:ConfigMap[$sid] = $r.id
@@ -386,8 +387,12 @@ function New-TestCaseInTarget {
     param($SourceWi)
 
     # Campos a copiar (los principales de Test Case)
+    # NOTA: System.State y System.Reason se excluyen intencionalmente.
+    # Los procesos (Agile/Scrum/CMMI/Custom) pueden tener estados diferentes
+    # entre origen y destino (ej: 'Ready' no existe en todos los templates).
+    # Se deja que el destino use su estado por defecto ('Design').
     $fieldsToCopy = @(
-        "System.Title","System.Description","System.State","System.Reason",
+        "System.Title","System.Description",
         "System.AreaPath","System.IterationPath","System.Tags",
         "Microsoft.VSTS.Common.Priority","Microsoft.VSTS.TCM.Steps",
         "Microsoft.VSTS.TCM.LocalDataSource","Microsoft.VSTS.TCM.Parameters",
