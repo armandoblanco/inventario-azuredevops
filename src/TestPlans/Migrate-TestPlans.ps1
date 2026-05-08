@@ -603,12 +603,28 @@ function Sync-SuitesAndTestCases {
         if ($tgtPlanId -and -not $script:SuiteMap.ContainsKey($rootKey)) {
             # Obtener root del plan destino (API moderna testplan)
             $rUrl = "$TargetOrgUrl/$TargetProject/_apis/testplan/Plans/$tgtPlanId/suites?api-version=$ApiVersion"
+            Write-Status "  GET suite raiz destino: $rUrl" -Level INFO
             $rr = Invoke-Ado -Url $rUrl -Pat $TargetPat
-            if (-not (Test-IsErr $rr) -and @($rr.value).Count -gt 0) {
-                $script:SuiteMap[$rootKey] = (@($rr.value) | Sort-Object id | Select-Object -First 1).id
-                Write-Status "  Suite raiz mapeada: $rootKey -> $($script:SuiteMap[$rootKey])" -Level OK
+            $isErr = Test-IsErr $rr
+            Write-Status "  Respuesta suite raiz: isErr=$isErr" -Level INFO
+            if ($isErr) {
+                Write-Status "  ERROR detail: $(Get-ErrMsg $rr)" -Level ERROR
+            } elseif ($rr.PSObject.Properties.Match('value').Count -gt 0) {
+                $rrValues = @($rr.value)
+                Write-Status "  Suites en destino: $($rrValues.Count)" -Level INFO
+                if ($rrValues.Count -gt 0) {
+                    $script:SuiteMap[$rootKey] = ($rrValues | Sort-Object id | Select-Object -First 1).id
+                    Write-Status "  Suite raiz mapeada: $rootKey -> $($script:SuiteMap[$rootKey])" -Level OK
+                } else {
+                    Write-Status "  ERROR: Plan destino $tgtPlanId no tiene suites" -Level ERROR
+                }
+            } elseif ($rr.PSObject.Properties.Match('id').Count -gt 0) {
+                # La API puede retornar la suite directamente sin wrapper .value
+                $script:SuiteMap[$rootKey] = $rr.id
+                Write-Status "  Suite raiz mapeada (directo): $rootKey -> $($rr.id)" -Level OK
             } else {
-                Write-Status "  ERROR: No se pudo obtener suite raiz del plan destino $tgtPlanId" -Level ERROR
+                Write-Status "  ERROR: Respuesta inesperada para suites del plan destino $tgtPlanId" -Level ERROR
+                Write-Status "  Response keys: $($rr.PSObject.Properties.Name -join ', ')" -Level INFO
             }
         }
 
