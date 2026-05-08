@@ -356,7 +356,22 @@ function Sync-TestConfigurations {
             # ADO Services usa _apis/testplan/configurations (no _apis/test/configurations)
             $tgtUrl = "$TargetOrgUrl/$TargetProject/_apis/testplan/configurations?api-version=$ApiVersion"
             $r = Invoke-Ado -Url $tgtUrl -Method Post -Pat $TargetPat -Body $body
-            if (Test-IsErr $r) { Write-Status "    ERROR: $(Get-ErrMsg $r)" -Level ERROR; continue }
+            if (Test-IsErr $r) {
+                # Si ya existe, buscarla y mapearla
+                if ((Get-ErrMsg $r) -match 'already exists') {
+                    $existing = Invoke-Ado -Url $tgtUrl -Pat $TargetPat
+                    if (-not (Test-IsErr $existing) -and $existing.PSObject.Properties.Match('value').Count -gt 0) {
+                        $match = @($existing.value) | Where-Object { $_.name -eq $cfg.name } | Select-Object -First 1
+                        if ($match) {
+                            $script:ConfigMap[$sid] = $match.id
+                            Save-Map $script:ConfigMap $paths.Config
+                            Write-Status "    EXISTS: Config '$($cfg.name)' ya existe (id=$($match.id)), mapeada" -Level INFO
+                            continue
+                        }
+                    }
+                }
+                Write-Status "    ERROR: $(Get-ErrMsg $r)" -Level ERROR; continue
+            }
             $script:ConfigMap[$sid] = $r.id
             Save-Map $script:ConfigMap $paths.Config
         }
