@@ -138,6 +138,9 @@ function Invoke-Ado {
     catch {
         $code = "Unknown"; $msg = $_.Exception.Message
         try { if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode } } catch {}
+        $detail = ""
+        try { if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $detail = $_.ErrorDetails.Message } } catch {}
+        if ($detail) { $msg = "$msg | Detail: $detail" }
         return [PSCustomObject]@{ _error=$true; _statusCode=$code; _message=$msg; _url=$Url }
     }
 }
@@ -190,7 +193,7 @@ function Collect-SourcePaths {
     }
     $wUrl = "$SourceBaseUrl/$SourceProject/_apis/wit/wiql?api-version=$SourceApiVersion"
     $wr = Invoke-Ado -Url $wUrl -Method Post -Pat $SourcePat -Body $wiql
-    if (-not (IsErr $wr) -and $wr.workItems.Count -gt 0) {
+    if (-not (IsErr $wr) -and @($wr.workItems).Count -gt 0) {
         $ids = @($wr.workItems | ForEach-Object { $_.id })
         $batchSize = 200
         for ($i = 0; $i -lt $ids.Count; $i += $batchSize) {
@@ -275,8 +278,8 @@ Write-Host ""
 if (-not (Test-TargetProjectAccess)) { exit 1 }
 
 $collected = Collect-SourcePaths
-$areaPaths = @($collected.Areas) | Sort-Object
-$iterPaths = @($collected.Iterations) | Sort-Object
+$areaPaths = @(@($collected.Areas) | Sort-Object)
+$iterPaths = @(@($collected.Iterations) | Sort-Object)
 Log "Areas referenciadas: $($areaPaths.Count) | Iteraciones referenciadas: $($iterPaths.Count)" "OK"
 
 $report = New-Object System.Collections.Generic.List[object]

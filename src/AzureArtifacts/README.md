@@ -21,7 +21,7 @@ públicos (nuget.org, npmjs.com) y feeds **satélite** que usan el principal com
 
 ## 2. Configuración: `src/.env`
 
-Mismas variables que los scripts de `AzureBoard/`:
+Mismas variables que los scripts de `TestPlans/`:
 
 ```env
 # === ORIGEN: Azure DevOps Server OnPrem ===

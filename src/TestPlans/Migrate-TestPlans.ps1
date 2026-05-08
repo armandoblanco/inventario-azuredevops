@@ -220,6 +220,10 @@ function Invoke-Ado {
     catch {
         $code = "Unknown"; $msg = $_.Exception.Message
         try { if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode } } catch { }
+        # Capturar body de respuesta para diagnosticar 400/409/etc.
+        $detail = ""
+        try { if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $detail = $_.ErrorDetails.Message } } catch { }
+        if ($detail) { $msg = "$msg | Detail: $detail" }
         return [PSCustomObject]@{ _error = $true; _statusCode = $code; _message = $msg; _url = $Url }
     }
 }

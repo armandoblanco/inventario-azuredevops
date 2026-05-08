@@ -1,4 +1,4 @@
-# AzureBoard — Inventario y Migración de Test Plans
+# TestPlans — Inventario y Migración de Test Plans
 
 Scripts PowerShell para inventariar y migrar **Azure DevOps Test Plans** desde
 Azure DevOps Server **OnPrem** hacia Azure DevOps Services **Cloud**.
@@ -54,7 +54,7 @@ Generar en `https://dev.azure.com/{org}/_usersSettings/tokens`:
 
 ## 3. Flujo recomendado de migración
 
-> Ejecutar todos los comandos desde `D:\develop\inventario-azuredevops\src\AzureBoard\`.
+> Ejecutar todos los comandos desde `D:\develop\inventario-azuredevops\src\TestPlans\`.
 
 ### Paso 1 — Inventario (opcional, recomendado)
 
