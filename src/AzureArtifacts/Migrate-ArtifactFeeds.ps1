@@ -568,15 +568,16 @@ function Download-SourcePackage {
 # PHASE 5: Push Packages to Target
 # ================================================================
 function Push-NuGetPackage {
-    param([string]$FilePath, [string]$FeedName)
+    param([string]$FilePath, [string]$FeedName, [string]$Scope = "Organization")
     # Intentar con dotnet nuget push, luego nuget.exe, luego REST API
-    $feedUrl = "$pkgsUrl/_packaging/$FeedName/nuget/v2"
+    $feedBase = if ($Scope -eq "Project" -and $TargetProject) { "$pkgsUrl/$TargetProject" } else { $pkgsUrl }
+    $feedUrl = "$feedBase/_packaging/$FeedName/nuget/v2"
     $apiKey  = "az"  # Azure DevOps ignora el API key, usa el header
 
     # Opcion 1: dotnet nuget push
     $dotnetAvailable = Get-Command "dotnet" -ErrorAction SilentlyContinue
     if ($dotnetAvailable) {
-        $sourceUrl = "$pkgsUrl/$TargetProject/_packaging/$FeedName/nuget/v3/index.json"
+        $sourceUrl = "$feedBase/_packaging/$FeedName/nuget/v3/index.json"
         $result = & dotnet nuget push $FilePath --source $sourceUrl --api-key $apiKey --skip-duplicate 2>&1
         if ($LASTEXITCODE -eq 0) { return $true }
         # Si falla skip-duplicate, puede ser que ya exista
@@ -592,7 +593,7 @@ function Push-NuGetPackage {
 
     # Opcion 3: REST API — multipart/form-data (requerido por ADO Services)
     $b64 = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$TargetPat"))
-    $pushUrl = "$pkgsUrl/$TargetProject/_packaging/$FeedName/nuget/v2"
+    $pushUrl = $feedUrl
     try {
         $boundary = [System.Guid]::NewGuid().ToString()
         $fileBytes = [System.IO.File]::ReadAllBytes($FilePath)
@@ -627,21 +628,23 @@ function Push-NuGetPackage {
 }
 
 function Push-NpmPackage {
-    param([string]$FilePath, [string]$FeedName)
-    $registryUrl = "$pkgsUrl/_packaging/$FeedName/npm/registry/"
+    param([string]$FilePath, [string]$FeedName, [string]$Scope = "Organization")
+    $feedBase = if ($Scope -eq "Project" -and $TargetProject) { "$pkgsUrl/$TargetProject" } else { $pkgsUrl }
+    $registryUrl = "$feedBase/_packaging/$FeedName/npm/registry/"
 
     # Configurar .npmrc temporal
     $npmrcPath = Join-Path $StagingDir ".npmrc"
     $b64Pat = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($TargetPat))
+    $pkgsBase = $feedBase -replace 'https://', ''
     $npmrcContent = @"
 registry=$registryUrl
 ; begin auth
-//$($pkgsUrl -replace 'https://', '')/_packaging/$FeedName/npm/registry/:username=VssSessionToken
-//$($pkgsUrl -replace 'https://', '')/_packaging/$FeedName/npm/registry/:_password=$b64Pat
-//$($pkgsUrl -replace 'https://', '')/_packaging/$FeedName/npm/registry/:email=npm@requires.email
-//$($pkgsUrl -replace 'https://', '')/_packaging/$FeedName/npm/:username=VssSessionToken
-//$($pkgsUrl -replace 'https://', '')/_packaging/$FeedName/npm/:_password=$b64Pat
-//$($pkgsUrl -replace 'https://', '')/_packaging/$FeedName/npm/:email=npm@requires.email
+//$pkgsBase/_packaging/$FeedName/npm/registry/:username=VssSessionToken
+//$pkgsBase/_packaging/$FeedName/npm/registry/:_password=$b64Pat
+//$pkgsBase/_packaging/$FeedName/npm/registry/:email=npm@requires.email
+//$pkgsBase/_packaging/$FeedName/npm/:username=VssSessionToken
+//$pkgsBase/_packaging/$FeedName/npm/:_password=$b64Pat
+//$pkgsBase/_packaging/$FeedName/npm/:email=npm@requires.email
 always-auth=true
 ; end auth
 "@
@@ -714,7 +717,7 @@ function Migrate-Packages {
                         $file = Download-SourcePackage -FeedId $feedId -Protocol "NuGet" -PackageName $pkgName -Version $verStr
                         if ($file) {
                             $totalDown++
-                            $ok = Push-NuGetPackage -FilePath $file -FeedName $feedName
+                            $ok = Push-NuGetPackage -FilePath $file -FeedName $feedName -Scope $feed._scope
                             if ($ok) {
                                 $script:PackageMap[$mapKey] = "OK"
                                 Save-Map $script:PackageMap $mapPaths.Package
@@ -760,7 +763,7 @@ function Migrate-Packages {
                         $file = Download-SourcePackage -FeedId $feedId -Protocol "Npm" -PackageName $pkgName -Version $verStr
                         if ($file) {
                             $totalDown++
-                            $ok = Push-NpmPackage -FilePath $file -FeedName $feedName
+                            $ok = Push-NpmPackage -FilePath $file -FeedName $feedName -Scope $feed._scope
                             if ($ok) {
                                 $script:PackageMap[$mapKey] = "OK"
                                 Save-Map $script:PackageMap $mapPaths.Package
