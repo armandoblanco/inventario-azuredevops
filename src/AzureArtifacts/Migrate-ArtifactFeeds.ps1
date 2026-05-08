@@ -165,7 +165,8 @@ if (-not $SourcePat)     { Write-Host "WARN: ADO_SOURCE_PAT vacio, usando creden
 
 $TargetOrgUrl = $TargetOrgUrl.TrimEnd('/')
 $orgName = ($TargetOrgUrl -split '/')[-1]
-$pkgsUrl = "https://pkgs.dev.azure.com/$orgName"
+$pkgsUrl  = "https://pkgs.dev.azure.com/$orgName"
+$feedsUrl = "https://feeds.dev.azure.com/$orgName"
 
 New-Item -ItemType Directory -Path $OutputDir  -Force | Out-Null
 New-Item -ItemType Directory -Path $StagingDir -Force | Out-Null
@@ -333,7 +334,7 @@ function Get-SourceFeeds {
 # PHASE 2: Create Feeds in Target
 # ================================================================
 function Get-TargetFeeds {
-    $r = Invoke-Target -BaseUrl $TargetOrgUrl -Path "_apis/packaging/feeds"
+    $r = Invoke-Target -BaseUrl $feedsUrl -Path "_apis/packaging/feeds"
     if (Test-IsErr $r) { return @() }
     if ($r.PSObject.Properties.Match('value').Count -gt 0) { return @($r.value) }
     return @()
@@ -353,9 +354,9 @@ function New-TargetFeed {
     if ($Scope -eq "Project" -and $TargetProject) {
         $path = "$TargetProject/_apis/packaging/feeds"
         $body["project"] = @{ id = $null } # se resuelve con la URL
-        return Invoke-Target -BaseUrl $TargetOrgUrl -Path $path -Method POST -Body $body -ApiVer "7.1-preview.1"
+        return Invoke-Target -BaseUrl $feedsUrl -Path $path -Method POST -Body $body -ApiVer "7.1-preview.1"
     } else {
-        return Invoke-Target -BaseUrl $TargetOrgUrl -Path "_apis/packaging/feeds" -Method POST -Body $body -ApiVer "7.1-preview.1"
+        return Invoke-Target -BaseUrl $feedsUrl -Path "_apis/packaging/feeds" -Method POST -Body $body -ApiVer "7.1-preview.1"
     }
 }
 
@@ -500,7 +501,7 @@ function Configure-Upstreams {
 
         if ($Execute -and $upstreams.Count -gt 0) {
             $body = @{ upstreamSources = $upstreams }
-            $r = Invoke-Target -BaseUrl $TargetOrgUrl -Path "_apis/packaging/feeds/$targetFeedId" -Method PATCH -Body $body -ApiVer "7.1-preview.1"
+            $r = Invoke-Target -BaseUrl $feedsUrl -Path "_apis/packaging/feeds/$targetFeedId" -Method PATCH -Body $body -ApiVer "7.1-preview.1"
             if (Test-IsErr $r) {
                 Write-Status "    ERROR upstream '$feedName': $(Get-ErrMsg $r)" -Level ERROR
             } else {
