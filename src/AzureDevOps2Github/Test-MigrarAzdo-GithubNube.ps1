@@ -1,29 +1,29 @@
 <#
 .SYNOPSIS
-    Genera scripts de migracion de Azure DevOps -> GitHub Cloud usando gh ado2gh.
+    Migra repos de Azure DevOps Cloud -> GitHub Cloud usando gh ado2gh migrate-repo.
 .DESCRIPTION
-    Lee credenciales y configuracion desde .env (patron estandar del repo).
-    Acepta una lista de repos por parametro, archivo CSV/TXT, o por defecto desde .env.
+    Ejecuta la migracion directa de uno o mas repos de un Team Project en ADO Cloud
+    hacia una organizacion en GitHub. Lee credenciales desde .env.
 .PARAMETER Repos
     Array de nombres de repositorios a migrar. Ej: -Repos "repo1","repo2","repo3"
 .PARAMETER RepoFile
     Ruta a un archivo con la lista de repos (uno por linea). Soporta .txt y .csv.
+.PARAMETER TeamProject
+    Nombre del Team Project en Azure DevOps. Tambien se puede definir como ADO_TEAM_PROJECT en .env.
 .PARAMETER EnvFile
     Ruta al archivo .env. Default: ../.env (carpeta src/)
-.PARAMETER OutputFolder
-    Nombre de la carpeta de salida para scripts generados. Default: scripts-migracion
 .EXAMPLE
-    # Migrar repos especificos:
-    .\Test-MigrarAzdo-GithubNube.ps1 -Repos "catalogUpdate_AzFLib","otro-repo"
+    # Migrar repos especificos de un Team Project:
+    .\Test-MigrarAzdo-GithubNube.ps1 -TeamProject "MiProyecto" -Repos "repo1","repo2"
 
     # Migrar repos desde un archivo:
     .\Test-MigrarAzdo-GithubNube.ps1 -RepoFile ".\repos-a-migrar.txt"
 
-    # Usar .env personalizado:
-    .\Test-MigrarAzdo-GithubNube.ps1 -Repos "mi-repo" -EnvFile "C:\config\mi.env"
+    # Todo desde .env:
+    .\Test-MigrarAzdo-GithubNube.ps1
 .NOTES
-    Requiere: gh cli con extension ado2gh instalada.
-    Las credenciales se leen de .env (ADO_PAT, GH_PAT, ADO_ORG, GH_ORG).
+    Requiere: gh cli con extension ado2gh instalada (gh extension install github/gh-ado2gh).
+    Env vars: ADO_PAT, GH_PAT, ADO_ORG, GH_ORG, ADO_TEAM_PROJECT, MIGRATION_REPOS.
 #>
 
 [CmdletBinding()]
@@ -32,9 +32,9 @@ param(
 
     [string]$RepoFile,
 
-    [string]$EnvFile = (Join-Path (Split-Path $PSScriptRoot -Parent) ".env"),
+    [string]$TeamProject,
 
-    [string]$OutputFolder = "scripts-migracion"
+    [string]$EnvFile = (Join-Path (Split-Path $PSScriptRoot -Parent) ".env")
 )
 
 # ============================================================
@@ -68,10 +68,13 @@ Import-DotEnv -Path $EnvFile
 # ============================================================
 # CONFIGURACION (desde .env o variables de entorno)
 # ============================================================
-$adoOrg    = if ($env:ADO_ORG)  { $env:ADO_ORG }  else { "CFBCR" }
-$githubOrg = if ($env:GH_ORG)  { $env:GH_ORG }   else { "BCR-Devops" }
-$adoPat    = $env:ADO_PAT
-$githubPat = $env:GH_PAT
+$adoOrg        = if ($env:ADO_ORG)          { $env:ADO_ORG }          else { "CFBCR" }
+$githubOrg     = if ($env:GH_ORG)           { $env:GH_ORG }           else { "BCR-Devops" }
+$adoTeamProject = if ($TeamProject)         { $TeamProject }
+                  elseif ($env:ADO_TEAM_PROJECT) { $env:ADO_TEAM_PROJECT }
+                  else { $null }
+$adoPat        = $env:ADO_PAT
+$githubPat     = $env:GH_PAT
 
 # --- Validar tokens ---
 if (-not $adoPat) {
@@ -80,6 +83,10 @@ if (-not $adoPat) {
 }
 if (-not $githubPat) {
     Write-Host "ERROR: Falta GH_PAT en .env o variable de entorno." -ForegroundColor Red
+    exit 1
+}
+if (-not $adoTeamProject) {
+    Write-Host "ERROR: Falta Team Project. Use -TeamProject o defina ADO_TEAM_PROJECT en .env." -ForegroundColor Red
     exit 1
 }
 
@@ -111,51 +118,39 @@ if ($repoList.Count -eq 0) {
     exit 1
 }
 
-Write-Host "`n=== Migracion ADO -> GitHub ===" -ForegroundColor Cyan
-Write-Host "  ADO Org:    $adoOrg" -ForegroundColor Gray
-Write-Host "  GitHub Org: $githubOrg" -ForegroundColor Gray
-Write-Host "  Repos:      $($repoList.Count)" -ForegroundColor Gray
+Write-Host "`n=== Migracion ADO Cloud -> GitHub ===" -ForegroundColor Cyan
+Write-Host "  ADO Org:      $adoOrg" -ForegroundColor Gray
+Write-Host "  Team Project: $adoTeamProject" -ForegroundColor Gray
+Write-Host "  GitHub Org:   $githubOrg" -ForegroundColor Gray
+Write-Host "  Repos:        $($repoList.Count)" -ForegroundColor Gray
 Write-Host ""
 
 # ============================================================
-# GENERAR SCRIPTS DE MIGRACION
+# MIGRAR REPOS DIRECTAMENTE
 # ============================================================
-$outputPath = Join-Path -Path $PSScriptRoot -ChildPath $OutputFolder
-New-Item -ItemType Directory -Path $outputPath -Force | Out-Null
+# Establece tokens como variables de entorno para gh ado2gh
+$env:ADO_PAT = $adoPat
+$env:GH_PAT = $githubPat
 
 $successCount = 0
 $failCount = 0
 
 foreach ($repo in $repoList) {
-    $outputFile = Join-Path -Path $outputPath -ChildPath "$repo-migracion.ps1"
-    Write-Host "[$($repoList.IndexOf($repo) + 1)/$($repoList.Count)] Generando script para '$repo'..." -ForegroundColor White
+    $idx = [array]::IndexOf($repoList, $repo) + 1
+    Write-Host "[$idx/$($repoList.Count)] Migrando '$repo'..." -ForegroundColor White
 
-    # Establece tokens como variables de entorno para gh ado2gh
-    $env:ADO_PAT = $adoPat
-    $env:GITHUB_TOKEN = $githubPat
-
-    gh ado2gh generate-script `
+    gh ado2gh migrate-repo `
         --ado-org $adoOrg `
+        --ado-team-project $adoTeamProject `
+        --ado-repo $repo `
         --github-org $githubOrg `
-        --output $outputFile
+        --github-repo $repo
 
-    if (Test-Path $outputFile) {
-        # Inyecta tokens al inicio del script generado (sin hardcodear, referencia a env vars)
-        $patBlock = @"
-# Tokens cargados desde variables de entorno - no hardcodear
-`$env:ADO_PERSONAL_ACCESS_TOKEN = `$env:ADO_PAT
-`$env:GITHUB_TOKEN = `$env:GH_PAT
-"@
-        $content = Get-Content $outputFile -Raw
-
-        # Reemplaza Read-Host del repo por el nombre concreto
-        $content = $content -replace '(\$ado_repo\s*=\s*)Read-Host[^\r\n]*', "`$ado_repo = '$repo'"
-
-        Set-Content $outputFile -Value ($patBlock + "`n" + $content) -Encoding UTF8
-        Write-Host "  OK: $outputFile" -ForegroundColor Green
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "  OK: $repo migrado exitosamente." -ForegroundColor Green
         $successCount++
     } else {
-        Write-Host "  ERROR: No se genero el script para '$repo'." -ForegroundColor Red
+        Write-Host "  ERROR: Fallo la migracion de '$repo' (exit code: $LASTEXITCODE)." -ForegroundColor Red
         $failCount++
     }
 }
@@ -168,5 +163,4 @@ Write-Host "  Exitosos: $successCount" -ForegroundColor Green
 if ($failCount -gt 0) {
     Write-Host "  Fallidos: $failCount" -ForegroundColor Red
 }
-Write-Host "  Carpeta:  $outputPath" -ForegroundColor Gray
 Write-Host ""
